@@ -10,6 +10,7 @@ STATE_FILE_NAME = ".mpv-tracker.json"
 DB_FILE_NAME = "library.sqlite3"
 MAL_SETTINGS_FILE_NAME = "mal.json"
 APP_SETTINGS_FILE_NAME = "settings.json"
+AVATAR_CACHE_DIR_NAME = "avatars"
 VIDEO_EXTENSIONS = {
     ".3gp",
     ".avi",

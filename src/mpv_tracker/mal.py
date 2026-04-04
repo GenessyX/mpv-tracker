@@ -9,12 +9,14 @@ import threading
 import time
 import webbrowser
 from dataclasses import dataclass
+from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING
 from urllib.error import HTTPError, URLError
 from urllib.parse import ParseResult, parse_qs, quote, urlencode, urlparse
 from urllib.request import OpenerDirector, ProxyHandler, Request, build_opener
 
+from mpv_tracker.config import AVATAR_CACHE_DIR_NAME, default_data_dir
 from mpv_tracker.models import AppSettings, MALCurrentUser, MALSettings
 
 if TYPE_CHECKING:
@@ -27,6 +29,7 @@ _CURRENT_USER_ENDPOINT = "https://api.myanimelist.net/v2/users/@me?fields=pictur
 _DEFAULT_REDIRECT_URI = "http://localhost:1234/callback"
 _TOKEN_EXCHANGE_ATTEMPTS = 3
 _TOKEN_EXCHANGE_BACKOFF_SECONDS = 1.0
+_MAX_FILE_SUFFIX_LENGTH = 5
 _CALLBACK_SUCCESS_HTML = """
 <html>
   <body>
@@ -282,7 +285,7 @@ def fetch_current_user(
 
     return MALCurrentUser(
         name=user_name,
-        picture=_coerce_string(parsed.get("picture")).strip(),
+        picture=_extract_user_picture(parsed),
     )
 
 
@@ -314,9 +317,75 @@ def hydrate_current_user(
     )
 
 
+def cache_avatar(
+    picture_url: str,
+    *,
+    app_settings: AppSettings | None = None,
+) -> Path | None:
+    """Download the MAL avatar to the local cache and return its path."""
+    normalized_url = picture_url.strip()
+    if not normalized_url:
+        return None
+
+    parsed = urlparse(normalized_url)
+    suffix = ""
+    if "." in parsed.path.rsplit("/", maxsplit=1)[-1]:
+        suffix = "." + parsed.path.rsplit(".", maxsplit=1)[-1].lower()
+    if len(suffix) > _MAX_FILE_SUFFIX_LENGTH:
+        suffix = ""
+
+    cache_dir = default_data_dir() / AVATAR_CACHE_DIR_NAME
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_name = f"{sha256(normalized_url.encode('utf-8')).hexdigest()}{suffix}"
+    cache_path = cache_dir / cache_name
+    if cache_path.exists():
+        return cache_path
+
+    request = Request(  # noqa: S310
+        normalized_url,
+        headers={
+            "Accept": "image/*",
+            "User-Agent": "mpv-tracker/0.1.0",
+        },
+    )
+    opener = _build_url_opener(app_settings)
+    try:
+        with opener.open(request, timeout=30) as response:
+            payload = response.read()
+    except HTTPError as error:
+        response_body = _read_http_error_body(error)
+        msg = f"Failed to download MAL avatar: HTTP {error.code} {error.reason}"
+        if response_body:
+            msg = f"{msg} | response={response_body}"
+        raise MALAuthError(msg) from error
+    except (URLError, OSError) as error:
+        msg = f"Failed to download MAL avatar: {error}"
+        raise MALAuthError(msg) from error
+
+    cache_path.write_bytes(payload)
+    return cache_path
+
+
 def _coerce_string(value: object) -> str:
     if isinstance(value, str):
         return value
+    return ""
+
+
+def _extract_user_picture(payload: dict[str, object]) -> str:
+    for key in ("picture", "main_picture"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+        if isinstance(value, dict):
+            for nested_key in ("large", "medium", "small"):
+                nested = value.get(nested_key)
+                if isinstance(nested, str):
+                    stripped = nested.strip()
+                    if stripped:
+                        return stripped
     return ""
 
 

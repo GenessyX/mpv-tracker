@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 import traceback
 from contextlib import contextmanager
+from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -15,7 +16,13 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, ListItem, ListView, Static
 
-from mpv_tracker.mal import MALAuthError, anime_url, authenticate, profile_url
+from mpv_tracker.mal import (
+    MALAuthError,
+    anime_url,
+    authenticate,
+    cache_avatar,
+    profile_url,
+)
 from mpv_tracker.models import AppSettings, MALSettings
 from mpv_tracker.service import TrackerService
 
@@ -330,13 +337,15 @@ class MALSettingsScreen(Screen[None]):
                 id="mal-settings-status",
             )
             yield Input(placeholder="MAL client ID", id="mal-client-id")
-            yield Static("", id="mal-token-status")
-            yield Static("", id="mal-account-status")
             with Horizontal(id="detail-actions"):
                 yield Button("Save Client ID", id="save-mal-client", variant="primary")
                 yield Button("Authenticate", id="authenticate-mal")
                 yield Button("Refresh Profile", id="refresh-mal-profile")
                 yield Button("Cancel", id="cancel-mal")
+            with Vertical(id="mal-account-layout"):
+                yield Static("", id="mal-token-status")
+                yield Static("", id="mal-account-status")
+                yield Static("", id="mal-avatar", shrink=True)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -344,6 +353,7 @@ class MALSettingsScreen(Screen[None]):
         self.query_one("#mal-client-id", Input).value = settings.client_id
         self.query_one("#mal-client-id", Input).focus()
         self._update_account_status()
+        self._refresh_avatar_preview()
 
     def action_cancel(self) -> None:
         self._tracker_app().pop_screen()
@@ -470,6 +480,7 @@ class MALSettingsScreen(Screen[None]):
         self.query_one("#mal-account-status", Static).update(
             _mal_account_status(settings),
         )
+        self._refresh_avatar_preview()
 
     def _complete_authentication(self, settings: MALSettings) -> None:
         self.query_one("#mal-client-id", Input).value = settings.client_id
@@ -487,6 +498,70 @@ class MALSettingsScreen(Screen[None]):
         self.query_one("#mal-client-id", Input).value = settings.client_id
         self._update_account_status()
         self._set_status("Refreshed MyAnimeList account details.")
+
+    @work(thread=True, exclusive=True)
+    def _refresh_avatar_preview(self) -> None:
+        settings = self._tracker_app().service.load_mal_settings()
+        picture_url = settings.user_picture.strip()
+        if not picture_url:
+            self._tracker_app().call_from_thread(
+                self._hide_avatar_widget,
+            )
+            return
+        try:
+            avatar_path = cache_avatar(
+                picture_url,
+                app_settings=self._tracker_app().service.load_app_settings(),
+            )
+        except MALAuthError as error:
+            self._tracker_app().report_exception(error)
+            self._tracker_app().call_from_thread(
+                self._update_avatar_widget_text,
+                f"Failed to load avatar.\n{error}",
+            )
+            return
+
+        if avatar_path is None:
+            self._tracker_app().call_from_thread(
+                self._hide_avatar_widget,
+            )
+            return
+
+        try:
+            renderable = _avatar_renderable(avatar_path)
+        except ImportError:
+            self._tracker_app().call_from_thread(
+                self._update_avatar_widget_text,
+                "Avatar preview needs `rich-pixels`.",
+            )
+            return
+        except Exception as error:  # noqa: BLE001
+            self._tracker_app().report_exception(error)
+            self._tracker_app().call_from_thread(
+                self._update_avatar_widget_text,
+                f"Failed to render avatar.\n{error}",
+            )
+            return
+
+        self._tracker_app().call_from_thread(
+            self._show_avatar_renderable,
+            renderable,
+        )
+
+    def _update_avatar_widget_text(self, message: str) -> None:
+        avatar = self.query_one("#mal-avatar", Static)
+        avatar.display = True
+        avatar.update(message)
+
+    def _show_avatar_renderable(self, renderable: object) -> None:
+        avatar = self.query_one("#mal-avatar", Static)
+        avatar.display = True
+        avatar.update(cast("Any", renderable))
+
+    def _hide_avatar_widget(self) -> None:
+        avatar = self.query_one("#mal-avatar", Static)
+        avatar.update("")
+        avatar.display = False
 
     def _tracker_app(self) -> MPVTrackerApp:
         return cast("MPVTrackerApp", self.app)
@@ -850,6 +925,21 @@ class MPVTrackerApp(App[None]):
         padding: 1 2;
     }
 
+    #mal-account-layout {
+        height: auto;
+        margin-bottom: 1;
+        align-horizontal: left;
+    }
+
+    #mal-avatar {
+        width: auto;
+        height: auto;
+        content-align: center middle;
+        border: round #355070;
+        padding: 1;
+        margin-top: 1;
+    }
+
     #title, #detail-title {
         text-style: bold;
         color: #f6bd60;
@@ -1031,6 +1121,17 @@ def _mal_account_status(settings: MALSettings) -> str:
     if settings.user_picture:
         lines.append(f"Avatar: {settings.user_picture}")
     return "\n".join(lines)
+
+
+def _avatar_renderable(path: Path) -> object:
+    rich_pixels = import_module("rich_pixels")
+    image_module = import_module("PIL.Image")
+    image = image_module.open(path)
+    try:
+        image.thumbnail((72, 20))
+        return rich_pixels.Pixels.from_image(image)
+    finally:
+        image.close()
 
 
 @contextmanager
