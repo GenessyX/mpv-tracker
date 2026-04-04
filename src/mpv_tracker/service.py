@@ -1,0 +1,262 @@
+"""High-level service layer used by the CLI."""
+
+from __future__ import annotations
+
+import re
+import sqlite3
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from mpv_tracker.config import (
+    DB_FILE_NAME,
+    RESUME_BACKTRACK_SECONDS,
+    default_data_dir,
+)
+from mpv_tracker.library import LibraryRepository
+from mpv_tracker.models import (
+    Episode,
+    EpisodeProgress,
+    LibraryEntry,
+    SeriesDetail,
+    SeriesProgress,
+)
+from mpv_tracker.mpv_client import MPVWatcher, PlaybackSnapshot
+from mpv_tracker.progress import (
+    current_progress,
+    discover_episodes,
+    load_state,
+    reset_state,
+    save_state,
+    select_episode,
+    transition_episode_progress,
+    watched_count,
+)
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+def slugify(value: str) -> str:
+    """Convert a title into a CLI-friendly slug."""
+    normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
+    return normalized.strip("-")
+
+
+@dataclass(slots=True)
+class TrackerService:
+    """Application service coordinating library, state, and playback."""
+
+    repository: LibraryRepository
+
+    @classmethod
+    def create_default(cls) -> "TrackerService":
+        """Create the service using the default application data directory."""
+        data_dir = default_data_dir()
+        return cls(repository=LibraryRepository(data_dir / DB_FILE_NAME))
+
+    def add_series(
+        self,
+        *,
+        title: str,
+        directory: Path,
+        slug: str | None,
+    ) -> LibraryEntry:
+        """Register a series in the global library index."""
+        resolved_directory = directory.expanduser().resolve()
+        if not resolved_directory.is_dir():
+            msg = f"Directory does not exist: {resolved_directory}"
+            raise ValueError(msg)
+
+        effective_slug = slugify(slug or title)
+        if not effective_slug:
+            msg = "Slug cannot be empty."
+            raise ValueError(msg)
+
+        entry = LibraryEntry(
+            slug=effective_slug,
+            title=title.strip(),
+            directory=resolved_directory,
+        )
+        try:
+            self.repository.add(entry)
+        except sqlite3.IntegrityError as error:
+            msg = "A series with the same slug or directory already exists."
+            raise ValueError(msg) from error
+        return entry
+
+    def list_progress(self) -> list[SeriesProgress]:
+        """Summarize tracked series progress."""
+        results: list[SeriesProgress] = []
+        for entry in self.repository.list_entries():
+            episodes = discover_episodes(entry.directory)
+            state = load_state(entry.directory)
+            current_episode, position_seconds = current_progress(state)
+            results.append(
+                SeriesProgress(
+                    entry=entry,
+                    watched_count=watched_count(state, episodes),
+                    total_count=len(episodes),
+                    current_episode=current_episode,
+                    current_position_seconds=position_seconds,
+                ),
+            )
+        return results
+
+    def resolve_entry(self, slug: str) -> LibraryEntry:
+        """Return a tracked series or fail with a user-facing error."""
+        entry = self.repository.get(slug)
+        if entry is None:
+            msg = f"No series found for slug {slug!r}."
+            raise ValueError(msg)
+        return entry
+
+    def choose_episode(
+        self,
+        slug: str,
+        selector: str | None,
+    ) -> tuple[LibraryEntry, Episode, float, int]:
+        """Resolve the target series and the episode to play."""
+        entry = self.resolve_entry(slug)
+        state = load_state(entry.directory)
+        episodes = discover_episodes(entry.directory)
+        episode = select_episode(episodes, state, selector=selector)
+        start_position = _resolve_start_position(state, episode)
+        return entry, episode, start_position, episode.index - 1
+
+    def get_series_detail(self, slug: str) -> SeriesDetail:
+        """Return detailed series progress for the TUI."""
+        entry = self.resolve_entry(slug)
+        state = load_state(entry.directory)
+        episodes = discover_episodes(entry.directory)
+        suggested_episode = None
+        if episodes:
+            suggested_episode = select_episode(episodes, state, selector=None)
+        current_episode, current_position_seconds = current_progress(state)
+        episode_states = state.get("episodes", {})
+        if not isinstance(episode_states, dict):
+            episode_states = {}
+
+        detailed_episodes: list[EpisodeProgress] = []
+        for episode in episodes:
+            raw_episode_state = episode_states.get(episode.label, {})
+            if not isinstance(raw_episode_state, dict):
+                raw_episode_state = {}
+            duration_seconds = raw_episode_state.get("duration_seconds")
+            detailed_episodes.append(
+                EpisodeProgress(
+                    episode=episode,
+                    watched=bool(raw_episode_state.get("watched")),
+                    position_seconds=_coerce_seconds(
+                        raw_episode_state.get("position_seconds", 0.0),
+                    ),
+                    duration_seconds=(
+                        _coerce_seconds(duration_seconds)
+                        if isinstance(duration_seconds, int | float)
+                        else None
+                    ),
+                    is_current=episode.label == current_episode,
+                ),
+            )
+
+        return SeriesDetail(
+            entry=entry,
+            watched_count=watched_count(state, episodes),
+            total_count=len(episodes),
+            current_episode=current_episode,
+            current_position_seconds=current_position_seconds,
+            suggested_episode=suggested_episode,
+            episodes=detailed_episodes,
+        )
+
+    def watch(self, slug: str, selector: str | None) -> tuple[LibraryEntry, Episode]:
+        """Launch MPV and update progress while playback runs."""
+        entry, episode, start_position, playlist_start = self.choose_episode(
+            slug,
+            selector,
+        )
+        state = load_state(entry.directory)
+        watcher = MPVWatcher(
+            entry.directory,
+            episode_name=episode.label,
+            playlist_start=playlist_start,
+            start_position_seconds=start_position,
+        )
+        previous_snapshot: tuple[str, float, float | None, bool] | None = None
+
+        def persist_snapshot(snapshot: PlaybackSnapshot) -> None:
+            nonlocal previous_snapshot
+            save_state(
+                entry.directory,
+                transition_episode_progress(
+                    state,
+                    previous_snapshot=previous_snapshot,
+                    snapshot=(
+                        snapshot.episode_name,
+                        snapshot.position_seconds,
+                        snapshot.duration_seconds,
+                        snapshot.watched,
+                    ),
+                ),
+            )
+            previous_snapshot = _merge_previous_snapshot(previous_snapshot, snapshot)
+
+        snapshot = watcher.watch(
+            on_update=persist_snapshot,
+        )
+        persist_snapshot(snapshot)
+        return entry, episode
+
+    def reset_progress(self, slug: str) -> LibraryEntry:
+        """Clear saved watch history for a tracked series."""
+        entry = self.resolve_entry(slug)
+        reset_state(entry.directory)
+        return entry
+
+
+def _resolve_start_position(state: dict[str, object], episode: Episode) -> float:
+    current_episode, current_position = current_progress(state)
+    if current_episode == episode.label:
+        return max(current_position - RESUME_BACKTRACK_SECONDS, 0.0)
+
+    episodes_state = state.get("episodes", {})
+    if not isinstance(episodes_state, dict):
+        return 0.0
+
+    episode_state = episodes_state.get(episode.label, {})
+    if not isinstance(episode_state, dict):
+        return 0.0
+
+    position = episode_state.get("position_seconds", 0.0)
+    if not isinstance(position, int | float):
+        return 0.0
+    return max(float(position) - RESUME_BACKTRACK_SECONDS, 0.0)
+
+
+def _merge_previous_snapshot(
+    previous_snapshot: tuple[str, float, float | None, bool] | None,
+    snapshot: PlaybackSnapshot,
+) -> tuple[str, float, float | None, bool]:
+    if previous_snapshot is None or previous_snapshot[0] != snapshot.episode_name:
+        return (
+            snapshot.episode_name,
+            snapshot.position_seconds,
+            snapshot.duration_seconds,
+            snapshot.watched,
+        )
+
+    _, previous_position, previous_duration, previous_watched = previous_snapshot
+    effective_duration = snapshot.duration_seconds
+    if effective_duration is None:
+        effective_duration = previous_duration
+    return (
+        snapshot.episode_name,
+        max(previous_position, snapshot.position_seconds),
+        effective_duration,
+        previous_watched or snapshot.watched,
+    )
+
+
+def _coerce_seconds(value: object) -> float:
+    if isinstance(value, int | float):
+        return max(float(value), 0.0)
+    return 0.0
