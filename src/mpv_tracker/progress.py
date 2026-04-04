@@ -145,12 +145,23 @@ def _snapshot_is_watched(
 
 def watched_count(state: dict[str, Any], episodes: Iterable[Episode]) -> int:
     """Count watched episodes for discovered files only."""
+    episode_list = list(episodes)
     episode_states = state.get("episodes", {})
-    return sum(
+    explicit_watched_count = sum(
         1
-        for episode in episodes
+        for episode in episode_list
         if bool(episode_states.get(episode.label, {}).get("watched"))
     )
+    current_episode, _ = current_progress(state)
+    if current_episode is None:
+        return explicit_watched_count
+
+    inferred_watched_count = explicit_watched_count
+    for episode in episode_list:
+        if episode.label == current_episode:
+            inferred_watched_count = max(explicit_watched_count, episode.index - 1)
+            break
+    return inferred_watched_count
 
 
 def current_progress(state: dict[str, Any]) -> tuple[str | None, float]:

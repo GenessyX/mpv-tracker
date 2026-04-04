@@ -396,6 +396,23 @@ def test_get_series_detail_returns_episode_statuses(tmp_path: Path) -> None:
     assert detail.episodes[1].position_seconds == 42.0
 
 
+def test_watched_count_uses_current_episode_as_minimum_progress(
+    tmp_path: Path,
+) -> None:
+    series_dir = tmp_path / "series"
+    series_dir.mkdir()
+    for index in range(1, 61):
+        (series_dir / f"{index:02d}.mkv").write_text("")
+
+    episodes = discover_episodes(series_dir)
+    state = {
+        "current": {"episode": "58.mkv", "position_seconds": 12.0},
+        "episodes": {"57.mkv": {"watched": True, "position_seconds": 0.0}},
+    }
+
+    assert watched_count(state, episodes) == 57
+
+
 def test_is_ipc_disconnect_matches_broken_pipe() -> None:
     assert _is_ipc_disconnect(BrokenPipeError())
 
