@@ -64,6 +64,9 @@ def slugify(value: str) -> str:
     return normalized.strip("-")
 
 
+_MAX_MAL_SCORE = 10
+
+
 @dataclass(slots=True)
 class TrackerService:
     """Application service coordinating library, state, and playback."""
@@ -355,6 +358,33 @@ class TrackerService:
         )
         self.repository.update(slug, updated)
         return updated
+
+    def rate_series_on_mal(self, slug: str, *, score: int) -> None:
+        """Set the linked MAL score from a 1-10 input."""
+        if score < 1 or score > _MAX_MAL_SCORE:
+            msg = "Score must be between 1 and 10."
+            raise ValueError(msg)
+
+        entry = self.resolve_entry(slug)
+        if entry.mal_anime_id is None:
+            msg = "Series is not linked to MAL."
+            raise ValueError(msg)
+
+        settings = self.load_mal_settings()
+        if not settings.access_token:
+            msg = "MAL authentication is not configured."
+            raise ValueError(msg)
+
+        update_anime_progress(
+            anime_id=entry.mal_anime_id,
+            access_token=settings.access_token,
+            num_watched_episodes=watched_count(
+                load_state(entry.directory),
+                discover_episodes(entry.directory),
+            ),
+            score=score,
+            app_settings=self.load_app_settings(),
+        )
 
     def _resolve_mal_settings_path(self) -> Path:
         if self.mal_settings_path is not None:

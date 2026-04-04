@@ -6,6 +6,7 @@ import os
 import traceback
 import webbrowser
 from contextlib import contextmanager
+from dataclasses import replace as dataclass_replace
 from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -16,7 +17,15 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Input, ListItem, ListView, Static
+from textual.widgets import (
+    Button,
+    Footer,
+    Header,
+    Input,
+    ListItem,
+    ListView,
+    Static,
+)
 
 from mpv_tracker.mal import (
     MALAuthError,
@@ -966,6 +975,8 @@ class SeriesDetailScreen(Screen[None]):
         self._detail: SeriesDetail | None = None
         self._playing = False
         self._mal_linked = False
+        self._mal_rating_enabled = False
+        self._selected_mal_score: int | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -974,6 +985,18 @@ class SeriesDetailScreen(Screen[None]):
             yield Static("", id="detail-summary")
             yield Static("", id="detail-directory")
             yield Static("", id="detail-mal")
+            yield Static("Rating", id="detail-rating-title")
+            with Horizontal(id="mal-rating-actions"):
+                yield Button("1", id="rate-1", classes="mal-rate-button")
+                yield Button("2", id="rate-2", classes="mal-rate-button")
+                yield Button("3", id="rate-3", classes="mal-rate-button")
+                yield Button("4", id="rate-4", classes="mal-rate-button")
+                yield Button("5", id="rate-5", classes="mal-rate-button")
+                yield Button("6", id="rate-6", classes="mal-rate-button")
+                yield Button("7", id="rate-7", classes="mal-rate-button")
+                yield Button("8", id="rate-8", classes="mal-rate-button")
+                yield Button("9", id="rate-9", classes="mal-rate-button")
+                yield Button("10", id="rate-10", classes="mal-rate-button")
             yield Static("", id="detail-preferences")
             yield Static("", id="playback-status")
             with Horizontal(id="detail-actions"):
@@ -994,22 +1017,26 @@ class SeriesDetailScreen(Screen[None]):
         self._detail = self._tracker_app().service.get_series_detail(self.slug)
         detail = self._detail
         self._mal_linked = detail.entry.mal_anime_id is not None
+        self._mal_rating_enabled = self._mal_linked and bool(
+            self._tracker_app().service.load_mal_settings().access_token,
+        )
         self.query_one("#detail-title", Static).update(detail.entry.title)
         self.query_one("#detail-summary", Static).update(_format_detail_summary(detail))
         self.query_one("#detail-directory", Static).update(str(detail.entry.directory))
-        mal_text = "MAL: not linked"
-        if detail.entry.mal_anime_id is not None:
-            mal_url = anime_url(detail.entry.mal_anime_id)
-            link = ""
-            if mal_url is not None:
-                link = f" ({_terminal_hyperlink(mal_url, mal_url)})"
-            mal_text = f"MAL: {detail.entry.mal_anime_id}{link}"
-            if detail.mal_anime_info is not None:
-                mal_text = (
-                    f"{mal_text}\n{_format_mal_anime_info(detail.mal_anime_info)}"
-                )
-        self.query_one("#detail-mal", Static).update(mal_text)
+        self.query_one("#detail-mal", Static).update(_format_detail_mal_text(detail))
         self.query_one("#open-mal", Button).display = self._mal_linked
+        rating_title = self.query_one("#detail-rating-title", Static)
+        rating_actions = self.query_one("#mal-rating-actions", Horizontal)
+        rating_title.display = self._mal_linked
+        rating_actions.display = self._mal_linked
+        score_value = None
+        if (
+            detail.mal_anime_info is not None
+            and detail.mal_anime_info.score is not None
+        ):
+            score_value = max(1, min(round(detail.mal_anime_info.score), 10))
+        self._selected_mal_score = score_value
+        self._sync_mal_rating_buttons()
         preferences_text = "Preferences: default playback"
         if detail.entry.start_chapter_index is not None:
             preferences_text = (
@@ -1114,6 +1141,13 @@ class SeriesDetailScreen(Screen[None]):
             return
         self._play(self._selected_episode_label())
 
+    @on(Button.Pressed, ".mal-rate-button")
+    def handle_rating_button(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        if not button_id.startswith("rate-"):
+            return
+        self._rate_on_mal(int(button_id.removeprefix("rate-")))
+
     @on(Button.Pressed, "#play")
     def handle_play_button(self) -> None:
         self.action_play_selected()
@@ -1196,6 +1230,58 @@ class SeriesDetailScreen(Screen[None]):
         except ValueError:
             return
         buttons[(index + step) % len(buttons)].focus()
+
+    @work(thread=True, exclusive=False)
+    def _rate_on_mal(self, score: int) -> None:
+        app = self._tracker_app()
+        app.call_from_thread(
+            self.query_one("#playback-status", Static).update,
+            f"Saving MAL score {score}...",
+        )
+        try:
+            app.service.rate_series_on_mal(self.slug, score=score)
+        except ValueError as error:
+            app.call_from_thread(
+                self.query_one("#playback-status", Static).update,
+                str(error),
+            )
+            return
+        except Exception as error:  # noqa: BLE001
+            app.report_exception(error)
+            app.call_from_thread(
+                self.query_one("#playback-status", Static).update,
+                f"Failed to save MAL rating: {error}",
+            )
+            return
+        app.call_from_thread(self._apply_saved_mal_score, score)
+
+    def _apply_saved_mal_score(self, score: int) -> None:
+        self._selected_mal_score = score
+        self._sync_mal_rating_buttons()
+        if self._detail is not None and self._detail.mal_anime_info is not None:
+            self._detail = dataclass_replace(
+                self._detail,
+                mal_anime_info=dataclass_replace(
+                    self._detail.mal_anime_info,
+                    score=float(score),
+                ),
+            )
+            self.query_one("#detail-mal", Static).update(
+                _format_detail_mal_text(self._detail),
+            )
+        self.query_one("#playback-status", Static).update(
+            f"Saved MAL score {score}.",
+        )
+
+    def _sync_mal_rating_buttons(self) -> None:
+        for score in range(1, 11):
+            button = self.query_one(f"#rate-{score}", Button)
+            button.disabled = not self._mal_rating_enabled
+            button.variant = (
+                "primary"
+                if self._selected_mal_score == score and self._mal_rating_enabled
+                else "default"
+            )
 
     def _tracker_app(self) -> MPVTrackerApp:
         return cast("MPVTrackerApp", self.app)
@@ -1396,6 +1482,11 @@ class MPVTrackerApp(App[None]):
         margin-top: 1;
     }
 
+    #mal-rating-actions {
+        height: auto;
+        margin-bottom: 1;
+    }
+
     #title, #detail-title {
         text-style: bold;
         color: #f6bd60;
@@ -1403,6 +1494,7 @@ class MPVTrackerApp(App[None]):
     }
 
     #library-status, #detail-summary, #detail-directory, #detail-mal,
+    #detail-rating-title,
     #detail-preferences,
     #playback-status, #add-series-status, #confirm-remove-message,
     #confirm-remove-status, #mal-settings-status, #app-settings-status,
@@ -1419,8 +1511,13 @@ class MPVTrackerApp(App[None]):
         color: #9fb3c8;
     }
 
-    #detail-directory, #detail-mal, #detail-preferences {
+    #detail-directory, #detail-mal, #detail-preferences, #detail-rating-title {
         color: #9fb3c8;
+    }
+
+    #mal-rating {
+        height: auto;
+        margin-bottom: 1;
     }
 
     #detail-actions {
@@ -1444,6 +1541,27 @@ class MPVTrackerApp(App[None]):
 
     Button {
         margin-right: 1;
+    }
+
+    .mal-rate-button {
+        height: 1;
+        min-width: 3;
+        width: 3;
+        margin-right: 0;
+        padding: 0;
+        border: none;
+    }
+
+    #rate-10 {
+        min-width: 4;
+        width: 4;
+    }
+
+    .mal-rate-button:focus {
+        border: none;
+        background: #355070;
+        color: #f1faee;
+        text-style: bold;
     }
 
     Button:focus {
@@ -1591,6 +1709,19 @@ def _format_mal_anime_info(info: MALAnimeInfo) -> str:
     rank = "n/a" if info.rank is None else str(info.rank)
     popularity = "n/a" if info.popularity is None else str(info.popularity)
     return f"Score: {score} | Ranked: {rank} | Popularity: {popularity}"
+
+
+def _format_detail_mal_text(detail: SeriesDetail) -> str:
+    if detail.entry.mal_anime_id is None:
+        return "MAL: not linked"
+    mal_url = anime_url(detail.entry.mal_anime_id)
+    link = ""
+    if mal_url is not None:
+        link = f" ({_terminal_hyperlink(mal_url, mal_url)})"
+    mal_text = f"MAL: {detail.entry.mal_anime_id}{link}"
+    if detail.mal_anime_info is not None:
+        mal_text = f"{mal_text}\n{_format_mal_anime_info(detail.mal_anime_info)}"
+    return mal_text
 
 
 def _format_mal_info_screen(info: MALAnimeInfo) -> str:

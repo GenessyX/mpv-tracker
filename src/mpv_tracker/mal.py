@@ -399,11 +399,12 @@ def cache_avatar(
     return cache_path
 
 
-def update_anime_progress(
+def update_anime_progress(  # noqa: PLR0913
     *,
     anime_id: int,
     access_token: str,
     num_watched_episodes: int,
+    score: int | None = None,
     status: str | None = None,
     app_settings: AppSettings | None = None,
 ) -> None:
@@ -411,6 +412,8 @@ def update_anime_progress(
     payload_data: dict[str, str | int] = {
         "num_watched_episodes": num_watched_episodes,
     }
+    if score is not None:
+        payload_data["score"] = score
     if status:
         payload_data["status"] = status
     payload = urlencode(payload_data).encode("utf-8")
