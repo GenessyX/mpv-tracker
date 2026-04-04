@@ -1716,15 +1716,6 @@ def _mal_account_status(settings: MALSettings) -> str:
             lines.append(f"Profile: {_terminal_hyperlink(profile, profile)}")
     else:
         lines.append("User: not loaded yet. Press Refresh to fetch account details.")
-
-    if settings.user_picture:
-        avatar_link = _terminal_hyperlink(
-            settings.user_picture,
-            settings.user_picture,
-        )
-        lines.append(
-            f"Avatar: {avatar_link}",
-        )
     return "\n".join(lines)
 
 
