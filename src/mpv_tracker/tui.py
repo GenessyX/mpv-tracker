@@ -77,6 +77,7 @@ class LibraryScreen(Screen[None]):
         for item in progress_items:
             list_view.append(SeriesListItem(item))
         list_view.index = 0
+        list_view.focus()
 
     def action_refresh(self) -> None:
         self.refresh_series()
@@ -156,6 +157,7 @@ class SeriesDetailScreen(Screen[None]):
         )
         if detail.episodes:
             list_view.index = default_index
+            list_view.focus()
         self._sync_play_button()
 
     def action_refresh(self) -> None:
