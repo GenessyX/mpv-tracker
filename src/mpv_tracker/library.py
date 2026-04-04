@@ -54,6 +54,14 @@ class LibraryRepository:
             directory=Path(row["directory"]),
         )
 
+    def remove(self, slug: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM library WHERE slug = ?",
+                (slug,),
+            )
+        return cursor.rowcount > 0
+
     def list_entries(self) -> list[LibraryEntry]:
         with self._connect() as connection:
             rows = connection.execute(

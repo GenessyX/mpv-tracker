@@ -55,6 +55,20 @@ def test_add_and_list_progress(tmp_path: Path) -> None:
     assert progress_items[0].total_count == 2
 
 
+def test_remove_series_removes_entry_from_library(tmp_path: Path) -> None:
+    series_dir = tmp_path / "frieren"
+    series_dir.mkdir()
+
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(repository=repository)
+    service.add_series(title="Frieren", directory=series_dir, slug="frieren")
+
+    removed = service.remove_series("frieren")
+
+    assert removed.slug == "frieren"
+    assert service.list_progress() == []
+
+
 def test_select_episode_prefers_resume_then_next_unwatched(tmp_path: Path) -> None:
     series_dir = tmp_path / "series"
     series_dir.mkdir()

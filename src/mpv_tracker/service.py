@@ -212,6 +212,15 @@ class TrackerService:
         reset_state(entry.directory)
         return entry
 
+    def remove_series(self, slug: str) -> LibraryEntry:
+        """Remove a tracked series from the library index."""
+        entry = self.resolve_entry(slug)
+        removed = self.repository.remove(slug)
+        if not removed:
+            msg = f"No series found for slug {slug!r}."
+            raise ValueError(msg)
+        return entry
+
 
 def _resolve_start_position(state: dict[str, object], episode: Episode) -> float:
     current_episode, current_position = current_progress(state)

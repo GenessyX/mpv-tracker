@@ -55,6 +55,7 @@ class LibraryScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BINDING]] = [
         ("a", "add_series", "Add"),
+        ("d", "remove_series", "Remove"),
         ("enter", "open_selected", "Open"),
         ("r", "refresh", "Refresh"),
         ("q", "app.quit", "Quit"),
@@ -98,6 +99,14 @@ class LibraryScreen(Screen[None]):
 
     def action_add_series(self) -> None:
         self._tracker_app().push_screen(AddSeriesScreen())
+
+    def action_remove_series(self) -> None:
+        list_view = self.query_one("#series-list", ListView)
+        highlighted = list_view.highlighted_child
+        if isinstance(highlighted, SeriesListItem):
+            self._tracker_app().push_screen(
+                ConfirmRemoveSeriesScreen(highlighted.slug),
+            )
 
     def action_open_selected(self) -> None:
         list_view = self.query_one("#series-list", ListView)
@@ -262,9 +271,6 @@ class AddSeriesScreen(Screen[None]):
         self._update_directory_matches(str(path))
         directory_input.focus()
 
-    def _tracker_app(self) -> MPVTrackerApp:
-        return cast("MPVTrackerApp", self.app)
-
     def _activate_directory_matches(self) -> None:
         matches_view = self.query_one("#directory-matches", ListView)
         if not matches_view.children:
@@ -278,13 +284,104 @@ class AddSeriesScreen(Screen[None]):
         if matches_view.children:
             matches_view.focus()
 
+    def _tracker_app(self) -> MPVTrackerApp:
+        return cast("MPVTrackerApp", self.app)
+
+
+class ConfirmRemoveSeriesScreen(Screen[None]):
+    """Confirmation dialog for removing a tracked series."""
+
+    BINDINGS: ClassVar[list[BINDING]] = [
+        ("escape", "cancel", "Cancel"),
+        ("left", "focus_previous_button", "Previous"),
+        ("right", "focus_next_button", "Next"),
+        ("y", "confirm", "Confirm"),
+        ("n", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, slug: str) -> None:
+        super().__init__()
+        self.slug = slug
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Vertical(id="confirm-remove-view"):
+            yield Static("Remove Series", id="detail-title")
+            yield Static("", id="confirm-remove-message")
+            yield Static(
+                "This removes the series from the tracker list only.",
+                id="confirm-remove-status",
+            )
+            with Horizontal(id="detail-actions"):
+                yield Button("Remove", id="confirm-remove", variant="error")
+                yield Button("Cancel", id="cancel-remove")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        entry = self._tracker_app().service.resolve_entry(self.slug)
+        self.query_one("#confirm-remove-message", Static).update(
+            f"Remove {entry.title} ({entry.slug}) from the tracked series list?",
+        )
+        self.call_after_refresh(self._focus_confirm_button)
+
+    def action_confirm(self) -> None:
+        self._confirm()
+
+    def action_cancel(self) -> None:
+        self._tracker_app().pop_screen()
+
+    def action_focus_next_button(self) -> None:
+        focused = self.focused
+        if focused is self.query_one("#confirm-remove", Button):
+            self._focus_cancel_button()
+            return
+        self._focus_confirm_button()
+
+    def action_focus_previous_button(self) -> None:
+        focused = self.focused
+        if focused is self.query_one("#cancel-remove", Button):
+            self._focus_confirm_button()
+            return
+        self._focus_cancel_button()
+
+    @on(Button.Pressed, "#confirm-remove")
+    def handle_confirm_button(self) -> None:
+        self._confirm()
+
+    @on(Button.Pressed, "#cancel-remove")
+    def handle_cancel_button(self) -> None:
+        self._tracker_app().pop_screen()
+
+    def _confirm(self) -> None:
+        try:
+            entry = self._tracker_app().service.remove_series(self.slug)
+        except ValueError as error:
+            self.query_one("#confirm-remove-status", Static).update(str(error))
+            return
+
+        app = self._tracker_app()
+        app.library_message = f"Removed {entry.title} ({entry.slug})."
+        app.pop_screen()
+        app.refresh_library()
+
+    def _tracker_app(self) -> MPVTrackerApp:
+        return cast("MPVTrackerApp", self.app)
+
+    def _focus_confirm_button(self) -> None:
+        self.query_one("#confirm-remove", Button).focus()
+
+    def _focus_cancel_button(self) -> None:
+        self.query_one("#cancel-remove", Button).focus()
+
 
 class SeriesDetailScreen(Screen[None]):
     """Detail screen for a single tracked series."""
 
     BINDINGS: ClassVar[list[BINDING]] = [
         ("escape", "pop_screen", "Back"),
+        ("left", "focus_previous_action", "Previous"),
         ("p", "play_selected", "Play"),
+        ("right", "focus_next_action", "Next"),
         ("r", "refresh", "Refresh"),
     ]
 
@@ -347,6 +444,36 @@ class SeriesDetailScreen(Screen[None]):
 
     def action_pop_screen(self) -> None:
         self._tracker_app().pop_screen()
+
+    def action_focus_next_action(self) -> None:
+        focused = self.focused
+        play_button = self.query_one("#play", Button)
+        back_button = self.query_one("#back", Button)
+        refresh_button = self.query_one("#refresh", Button)
+        if focused is play_button:
+            back_button.focus()
+            return
+        if focused is back_button:
+            refresh_button.focus()
+            return
+        if focused is refresh_button:
+            play_button.focus()
+            return
+
+    def action_focus_previous_action(self) -> None:
+        focused = self.focused
+        play_button = self.query_one("#play", Button)
+        back_button = self.query_one("#back", Button)
+        refresh_button = self.query_one("#refresh", Button)
+        if focused is play_button:
+            refresh_button.focus()
+            return
+        if focused is back_button:
+            play_button.focus()
+            return
+        if focused is refresh_button:
+            back_button.focus()
+            return
 
     def action_play_selected(self) -> None:
         if self._playing:
@@ -428,7 +555,7 @@ class MPVTrackerApp(App[None]):
         padding: 1 2;
     }
 
-    #add-series-view {
+    #add-series-view, #confirm-remove-view {
         padding: 1 2;
     }
 
@@ -439,7 +566,7 @@ class MPVTrackerApp(App[None]):
     }
 
     #library-status, #detail-summary, #detail-directory, #playback-status,
-    #add-series-status {
+    #add-series-status, #confirm-remove-message, #confirm-remove-status {
         margin-bottom: 1;
     }
 
@@ -468,6 +595,13 @@ class MPVTrackerApp(App[None]):
 
     Button {
         margin-right: 1;
+    }
+
+    Button:focus {
+        border: round #f6bd60;
+        background: #355070;
+        color: #f1faee;
+        text-style: bold;
     }
 
     Input {
