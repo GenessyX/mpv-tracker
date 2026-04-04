@@ -72,6 +72,28 @@ def test_remove_series_removes_entry_from_library(tmp_path: Path) -> None:
     assert service.list_progress() == []
 
 
+def test_update_series_updates_title_slug_and_mal_anime(tmp_path: Path) -> None:
+    series_dir = tmp_path / "frieren"
+    series_dir.mkdir()
+
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(repository=repository)
+    service.add_series(title="Frieren", directory=series_dir, slug="frieren")
+
+    updated = service.update_series(
+        "frieren",
+        title="Sousou no Frieren",
+        directory=series_dir,
+        slug="sousou-no-frieren",
+        mal_anime="52991",
+    )
+
+    assert updated.title == "Sousou no Frieren"
+    assert updated.slug == "sousou-no-frieren"
+    assert updated.mal_anime_id == 52991
+    assert service.resolve_entry("sousou-no-frieren") == updated
+
+
 def test_add_series_parses_mal_anime_url(tmp_path: Path) -> None:
     series_dir = tmp_path / "frieren"
     series_dir.mkdir()

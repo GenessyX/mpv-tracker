@@ -108,6 +108,43 @@ class TrackerService:
             raise ValueError(msg) from error
         return entry
 
+    def update_series(
+        self,
+        current_slug: str,
+        *,
+        title: str,
+        directory: Path,
+        slug: str | None,
+        mal_anime: str | None = None,
+    ) -> LibraryEntry:
+        """Update tracked series metadata."""
+        self.resolve_entry(current_slug)
+        resolved_directory = directory.expanduser().resolve()
+        if not resolved_directory.is_dir():
+            msg = f"Directory does not exist: {resolved_directory}"
+            raise ValueError(msg)
+
+        effective_slug = slugify(slug or title)
+        if not effective_slug:
+            msg = "Slug cannot be empty."
+            raise ValueError(msg)
+
+        entry = LibraryEntry(
+            slug=effective_slug,
+            title=title.strip(),
+            directory=resolved_directory,
+            mal_anime_id=parse_anime_reference(mal_anime),
+        )
+        try:
+            updated = self.repository.update(current_slug, entry)
+        except sqlite3.IntegrityError as error:
+            msg = "A series with the same slug or directory already exists."
+            raise ValueError(msg) from error
+        if not updated:
+            msg = f"No series found for slug {current_slug!r}."
+            raise ValueError(msg)
+        return entry
+
     def load_mal_settings(self) -> MALSettings:
         """Load persisted MAL credentials."""
         return load_settings(self._resolve_mal_settings_path())

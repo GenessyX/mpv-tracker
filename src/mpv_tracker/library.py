@@ -57,6 +57,24 @@ class LibraryRepository:
                 ),
             )
 
+    def update(self, current_slug: str, entry: LibraryEntry) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                (
+                    "UPDATE library "
+                    "SET slug = ?, title = ?, directory = ?, mal_anime_id = ? "
+                    "WHERE slug = ?"
+                ),
+                (
+                    entry.slug,
+                    entry.title,
+                    str(entry.directory),
+                    entry.mal_anime_id,
+                    current_slug,
+                ),
+            )
+        return cursor.rowcount > 0
+
     def get(self, slug: str) -> LibraryEntry | None:
         with self._connect() as connection:
             row = connection.execute(

@@ -69,6 +69,7 @@ class LibraryScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BINDING]] = [
         ("a", "add_series", "Add"),
+        ("e", "edit_series", "Edit"),
         ("d", "remove_series", "Remove"),
         ("m", "mal_login", "MAL"),
         ("s", "settings", "Settings"),
@@ -121,6 +122,12 @@ class LibraryScreen(Screen[None]):
 
     def action_settings(self) -> None:
         self._tracker_app().push_screen(AppSettingsScreen())
+
+    def action_edit_series(self) -> None:
+        list_view = self.query_one("#series-list", ListView)
+        highlighted = list_view.highlighted_child
+        if isinstance(highlighted, SeriesListItem):
+            self._tracker_app().push_screen(EditSeriesScreen(highlighted.slug))
 
     def action_remove_series(self) -> None:
         list_view = self.query_one("#series-list", ListView)
@@ -253,6 +260,188 @@ class AddSeriesScreen(Screen[None]):
 
         app = self._tracker_app()
         app.library_message = f"Added {entry.title} ({entry.slug})."
+        app.pop_screen()
+        app.refresh_library()
+
+    def _set_status(self, message: str) -> None:
+        self.query_one("#add-series-status", Static).update(message)
+
+    def _update_directory_matches(self, value: str) -> None:
+        matches_view = self.query_one("#directory-matches", ListView)
+        matches_view.index = None
+        matches_view.clear()
+        matches = _find_directory_matches(value)
+        for path in matches:
+            matches_view.append(DirectoryMatchItem(path))
+        if matches:
+            self.call_after_refresh(self._activate_directory_matches)
+
+    def _apply_highlighted_directory_match(self) -> bool:
+        matches_view = self.query_one("#directory-matches", ListView)
+        highlighted = matches_view.highlighted_child
+        if isinstance(highlighted, DirectoryMatchItem):
+            self._apply_directory_match(highlighted.path)
+            return True
+        return False
+
+    def _descend_into_highlighted_directory(self) -> bool:
+        matches_view = self.query_one("#directory-matches", ListView)
+        highlighted = matches_view.highlighted_child
+        if not isinstance(highlighted, DirectoryMatchItem):
+            return False
+
+        path = highlighted.path
+        directory_input = self.query_one("#add-directory", Input)
+        directory_input.value = _directory_prefix(path)
+        self._update_directory_matches(directory_input.value)
+        if not _find_directory_matches(directory_input.value):
+            directory_input.focus()
+        else:
+            self.call_after_refresh(self._activate_directory_matches_and_focus)
+        return True
+
+    def _apply_directory_match(self, path: Path) -> None:
+        directory_input = self.query_one("#add-directory", Input)
+        directory_input.value = str(path)
+        self._update_directory_matches(str(path))
+        directory_input.focus()
+
+    def _activate_directory_matches(self) -> None:
+        matches_view = self.query_one("#directory-matches", ListView)
+        if not matches_view.children:
+            return
+        matches_view.index = None
+        matches_view.index = 0
+
+    def _activate_directory_matches_and_focus(self) -> None:
+        self._activate_directory_matches()
+        matches_view = self.query_one("#directory-matches", ListView)
+        if matches_view.children:
+            matches_view.focus()
+
+    def _tracker_app(self) -> MPVTrackerApp:
+        return cast("MPVTrackerApp", self.app)
+
+
+class EditSeriesScreen(Screen[None]):
+    """Form screen for editing a tracked series."""
+
+    BINDINGS: ClassVar[list[BINDING]] = [
+        ("escape", "cancel", "Cancel"),
+        ("ctrl+s", "submit", "Save"),
+        ("down", "focus_directory_matches", "Directory Matches"),
+        ("right", "descend_directory", "Enter Directory"),
+    ]
+
+    def __init__(self, slug: str) -> None:
+        super().__init__()
+        self.slug = slug
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Vertical(id="add-series-view"):
+            yield Static("Edit Series", id="detail-title")
+            yield Static(
+                (
+                    "Update the tracked series fields. Slug and MAL anime "
+                    "reference are optional."
+                ),
+                id="add-series-status",
+            )
+            yield Input(placeholder="Series title", id="add-title")
+            yield Input(placeholder="/path/to/series", id="add-directory")
+            yield ListView(id="directory-matches")
+            yield Input(placeholder="optional-slug", id="add-slug")
+            yield Input(
+                placeholder="MAL anime ID or https://myanimelist.net/anime/...",
+                id="add-mal-anime",
+            )
+            with Horizontal(id="detail-actions"):
+                yield Button("Save", id="save-series", variant="primary")
+                yield Button("Cancel", id="cancel-series")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        entry = self._tracker_app().service.resolve_entry(self.slug)
+        self.query_one("#add-title", Input).value = entry.title
+        self.query_one("#add-directory", Input).value = str(entry.directory)
+        self.query_one("#add-slug", Input).value = entry.slug
+        mal_link = anime_url(entry.mal_anime_id) or ""
+        self.query_one("#add-mal-anime", Input).value = mal_link
+        self.query_one("#add-title", Input).focus()
+        self._update_directory_matches(str(entry.directory))
+
+    def action_cancel(self) -> None:
+        self._tracker_app().pop_screen()
+
+    def action_submit(self) -> None:
+        self._submit()
+
+    def action_focus_directory_matches(self) -> None:
+        matches_view = self.query_one("#directory-matches", ListView)
+        if matches_view.children:
+            self._activate_directory_matches_and_focus()
+
+    def action_descend_directory(self) -> None:
+        self._descend_into_highlighted_directory()
+
+    @on(Button.Pressed, "#save-series")
+    def handle_save_button(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#cancel-series")
+    def handle_cancel_button(self) -> None:
+        self._tracker_app().pop_screen()
+
+    @on(Input.Submitted)
+    def handle_input_submitted(self, event: Input.Submitted) -> None:
+        if (
+            event.input.id == "add-directory"
+            and self._apply_highlighted_directory_match()
+        ):
+            return
+        if event.input.id == "add-mal-anime":
+            self._submit()
+            return
+        self.focus_next()
+
+    @on(Input.Changed, "#add-directory")
+    def handle_directory_changed(self, event: Input.Changed) -> None:
+        self._update_directory_matches(event.value)
+
+    @on(ListView.Selected, "#directory-matches")
+    def handle_directory_selected(self, event: ListView.Selected) -> None:
+        if isinstance(event.item, DirectoryMatchItem):
+            self._apply_directory_match(event.item.path)
+
+    def _submit(self) -> None:
+        title = self.query_one("#add-title", Input).value.strip()
+        directory = self.query_one("#add-directory", Input).value.strip()
+        slug = self.query_one("#add-slug", Input).value.strip() or None
+        mal_anime = self.query_one("#add-mal-anime", Input).value.strip() or None
+        if not title:
+            self._set_status("Title cannot be empty.")
+            self.query_one("#add-title", Input).focus()
+            return
+        if not directory:
+            self._set_status("Directory cannot be empty.")
+            self.query_one("#add-directory", Input).focus()
+            return
+
+        try:
+            entry = self._tracker_app().service.update_series(
+                self.slug,
+                title=title,
+                directory=Path(directory),
+                slug=slug,
+                mal_anime=mal_anime,
+            )
+        except ValueError as error:
+            self._set_status(str(error))
+            return
+
+        app = self._tracker_app()
+        app.library_message = f"Updated {entry.title} ({entry.slug})."
         app.pop_screen()
         app.refresh_library()
 
@@ -736,6 +925,7 @@ class SeriesDetailScreen(Screen[None]):
 
     BINDINGS: ClassVar[list[BINDING]] = [
         ("escape", "pop_screen", "Back"),
+        ("e", "edit_series", "Edit"),
         ("left", "focus_previous_action", "Previous"),
         ("p", "play_selected", "Play"),
         ("right", "focus_next_action", "Next"),
@@ -758,6 +948,7 @@ class SeriesDetailScreen(Screen[None]):
             yield Static("", id="playback-status")
             with Horizontal(id="detail-actions"):
                 yield Button("Play", id="play", variant="primary")
+                yield Button("Edit", id="edit")
                 yield Button("Back", id="back")
                 yield Button("Refresh", id="refresh")
             yield ListView(id="episode-list")
@@ -810,12 +1001,19 @@ class SeriesDetailScreen(Screen[None]):
     def action_pop_screen(self) -> None:
         self._tracker_app().pop_screen()
 
+    def action_edit_series(self) -> None:
+        self._tracker_app().push_screen(EditSeriesScreen(self.slug))
+
     def action_focus_next_action(self) -> None:
         focused = self.focused
         play_button = self.query_one("#play", Button)
+        edit_button = self.query_one("#edit", Button)
         back_button = self.query_one("#back", Button)
         refresh_button = self.query_one("#refresh", Button)
         if focused is play_button:
+            edit_button.focus()
+            return
+        if focused is edit_button:
             back_button.focus()
             return
         if focused is back_button:
@@ -828,13 +1026,17 @@ class SeriesDetailScreen(Screen[None]):
     def action_focus_previous_action(self) -> None:
         focused = self.focused
         play_button = self.query_one("#play", Button)
+        edit_button = self.query_one("#edit", Button)
         back_button = self.query_one("#back", Button)
         refresh_button = self.query_one("#refresh", Button)
         if focused is play_button:
             refresh_button.focus()
             return
-        if focused is back_button:
+        if focused is edit_button:
             play_button.focus()
+            return
+        if focused is back_button:
+            edit_button.focus()
             return
         if focused is refresh_button:
             back_button.focus()
@@ -848,6 +1050,10 @@ class SeriesDetailScreen(Screen[None]):
     @on(Button.Pressed, "#play")
     def handle_play_button(self) -> None:
         self.action_play_selected()
+
+    @on(Button.Pressed, "#edit")
+    def handle_edit_button(self) -> None:
+        self.action_edit_series()
 
     @on(Button.Pressed, "#back")
     def handle_back_button(self) -> None:
