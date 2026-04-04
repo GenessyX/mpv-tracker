@@ -9,9 +9,11 @@ APP_NAME = "mpv-tracker"
 STATE_FILE_NAME = ".mpv-tracker.json"
 DB_FILE_NAME = "library.sqlite3"
 MAL_SETTINGS_FILE_NAME = "mal.json"
+MAL_ANIME_CACHE_FILE_NAME = "mal-anime-cache.json"
 APP_SETTINGS_FILE_NAME = "settings.json"
 AVATAR_CACHE_DIR_NAME = "avatars"
 DEFAULT_MAL_CLIENT_ID = "774e9161d6f70a57fbc5d4b7072d9417"
+MAL_ANIME_CACHE_TTL_SECONDS = 60 * 60 * 24
 VIDEO_EXTENSIONS = {
     ".3gp",
     ".avi",

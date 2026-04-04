@@ -23,7 +23,7 @@ from mpv_tracker.mal import (
     cache_avatar,
     profile_url,
 )
-from mpv_tracker.models import AppSettings, MALSettings
+from mpv_tracker.models import AppSettings, MALAnimeInfo, MALSettings
 from mpv_tracker.service import TrackerService
 
 if TYPE_CHECKING:
@@ -969,6 +969,10 @@ class SeriesDetailScreen(Screen[None]):
                 f"MAL: {detail.entry.mal_anime_id} "
                 f"({anime_url(detail.entry.mal_anime_id)})"
             )
+            if detail.mal_anime_info is not None:
+                mal_text = (
+                    f"{mal_text}\n{_format_mal_anime_info(detail.mal_anime_info)}"
+                )
         self.query_one("#detail-mal", Static).update(mal_text)
         playback_status = (
             "Choose an episode and press Play. Enter on a row also starts playback."
@@ -1327,6 +1331,13 @@ def _mal_account_status(settings: MALSettings) -> str:
     if settings.user_picture:
         lines.append(f"Avatar: {settings.user_picture}")
     return "\n".join(lines)
+
+
+def _format_mal_anime_info(info: MALAnimeInfo) -> str:
+    score = "n/a" if info.score is None else f"{info.score:.2f}"
+    rank = "n/a" if info.rank is None else str(info.rank)
+    popularity = "n/a" if info.popularity is None else str(info.popularity)
+    return f"Score: {score} | Ranked: {rank} | Popularity: {popularity}"
 
 
 def _avatar_renderable(path: Path) -> object:

@@ -47,6 +47,16 @@ class AppSettings:
 
 
 @dataclass(slots=True, frozen=True)
+class MALAnimeInfo:
+    """Cached public MyAnimeList anime metadata."""
+
+    anime_id: int
+    score: float | None = None
+    rank: int | None = None
+    popularity: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class Episode:
     """Video episode discovered on disk."""
 
@@ -91,4 +101,5 @@ class SeriesDetail:
     current_episode: str | None
     current_position_seconds: float
     suggested_episode: Episode | None
+    mal_anime_info: MALAnimeInfo | None
     episodes: list[EpisodeProgress]

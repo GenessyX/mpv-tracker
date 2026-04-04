@@ -6,7 +6,7 @@ import mpv_tracker.service as service_module
 from mpv_tracker.config import DEFAULT_MAL_CLIENT_ID
 from mpv_tracker.library import LibraryRepository
 from mpv_tracker.mal import build_authorization, parse_anime_reference, profile_url
-from mpv_tracker.models import AppSettings, MALSettings
+from mpv_tracker.models import AppSettings, MALAnimeInfo, MALSettings
 from mpv_tracker.mpv_client import (
     PlaybackSnapshot,
     _apply_end_file,
@@ -166,6 +166,49 @@ def test_sync_series_progress_to_mal_updates_watched_count(
         "status": "watching",
         "app_settings": AppSettings(),
     }
+
+
+def test_get_series_detail_includes_cached_mal_anime_info(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    series_dir = tmp_path / "frieren"
+    series_dir.mkdir()
+    (series_dir / "01.mkv").write_text("")
+
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(
+        repository=repository,
+        mal_settings_path=tmp_path / "mal.json",
+        mal_anime_cache_path=tmp_path / "mal-anime-cache.json",
+        app_settings_path=tmp_path / "settings.json",
+    )
+    service.add_series(
+        title="Frieren",
+        directory=series_dir,
+        slug="frieren",
+        mal_anime="52991",
+    )
+
+    monkeypatch.setattr(
+        service_module,
+        "resolve_cached_anime_info",
+        lambda anime_id, **_kwargs: MALAnimeInfo(
+            anime_id=anime_id,
+            score=8.75,
+            rank=42,
+            popularity=128,
+        ),
+    )
+
+    detail = service.get_series_detail("frieren")
+
+    assert detail.mal_anime_info == MALAnimeInfo(
+        anime_id=52991,
+        score=8.75,
+        rank=42,
+        popularity=128,
+    )
 
 
 def test_add_series_parses_mal_anime_url(tmp_path: Path) -> None:

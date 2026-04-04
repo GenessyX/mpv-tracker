@@ -19,9 +19,10 @@ from urllib.request import OpenerDirector, ProxyHandler, Request, build_opener
 from mpv_tracker.config import (
     AVATAR_CACHE_DIR_NAME,
     DEFAULT_MAL_CLIENT_ID,
+    MAL_ANIME_CACHE_TTL_SECONDS,
     default_data_dir,
 )
-from mpv_tracker.models import AppSettings, MALCurrentUser, MALSettings
+from mpv_tracker.models import AppSettings, MALAnimeInfo, MALCurrentUser, MALSettings
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -32,6 +33,9 @@ _OAUTH_TOKEN_ENDPOINT = "https://myanimelist.net/v1/oauth2/token"  # noqa: S105
 _CURRENT_USER_ENDPOINT = "https://api.myanimelist.net/v2/users/@me?fields=picture"
 _MY_LIST_STATUS_ENDPOINT_TEMPLATE = (
     "https://api.myanimelist.net/v2/anime/{anime_id}/my_list_status"
+)
+_ANIME_DETAILS_ENDPOINT_TEMPLATE = (
+    "https://api.myanimelist.net/v2/anime/{anime_id}?fields=mean,rank,popularity"
 )
 _DEFAULT_REDIRECT_URI = "http://localhost:1234/callback"
 _TOKEN_EXCHANGE_ATTEMPTS = 3
@@ -53,6 +57,10 @@ class MALAuthError(RuntimeError):
 
 class MALSyncError(RuntimeError):
     """Raised when MAL list synchronization fails."""
+
+
+class MALDataError(RuntimeError):
+    """Raised when MAL public anime metadata fetch fails."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -429,6 +437,120 @@ def update_anime_progress(
         raise MALSyncError(msg) from error
 
 
+def fetch_anime_info(
+    anime_id: int,
+    *,
+    client_id: str,
+    app_settings: AppSettings | None = None,
+) -> MALAnimeInfo:
+    """Fetch public anime metadata from MAL."""
+    request = Request(  # noqa: S310
+        _ANIME_DETAILS_ENDPOINT_TEMPLATE.format(anime_id=anime_id),
+        headers={
+            "X-MAL-CLIENT-ID": client_id,
+            "Accept": "application/json",
+            "User-Agent": "mpv-tracker/0.1.0",
+        },
+    )
+    opener = _build_url_opener(app_settings)
+    try:
+        with opener.open(request, timeout=30) as response:
+            parsed = json.load(response)
+    except HTTPError as error:
+        response_body = _read_http_error_body(error)
+        msg = f"Failed to fetch MAL anime metadata: HTTP {error.code} {error.reason}"
+        if response_body:
+            msg = f"{msg} | response={response_body}"
+        raise MALDataError(msg) from error
+    except (URLError, OSError) as error:
+        msg = f"Failed to fetch MAL anime metadata: {error}"
+        raise MALDataError(msg) from error
+
+    if not isinstance(parsed, dict):
+        msg = "MyAnimeList returned an invalid anime metadata response."
+        raise MALDataError(msg)
+
+    return MALAnimeInfo(
+        anime_id=anime_id,
+        score=_coerce_optional_float(parsed.get("mean")),
+        rank=_coerce_optional_int(parsed.get("rank")),
+        popularity=_coerce_optional_int(parsed.get("popularity")),
+    )
+
+
+def load_anime_cache(path: Path) -> dict[int, tuple[float, MALAnimeInfo]]:
+    """Load cached MAL anime metadata."""
+    if not path.exists():
+        return {}
+    with path.open(encoding="utf-8") as file:
+        payload = json.load(file)
+    if not isinstance(payload, dict):
+        return {}
+
+    cache: dict[int, tuple[float, MALAnimeInfo]] = {}
+    for key, value in payload.items():
+        if not isinstance(key, str) or not key.isdigit() or not isinstance(value, dict):
+            continue
+        fetched_at = value.get("fetched_at")
+        if not isinstance(fetched_at, int | float):
+            continue
+        anime_id = int(key)
+        cache[anime_id] = (
+            float(fetched_at),
+            MALAnimeInfo(
+                anime_id=anime_id,
+                score=_coerce_optional_float(value.get("score")),
+                rank=_coerce_optional_int(value.get("rank")),
+                popularity=_coerce_optional_int(value.get("popularity")),
+            ),
+        )
+    return cache
+
+
+def save_anime_cache(path: Path, cache: dict[int, tuple[float, MALAnimeInfo]]) -> None:
+    """Persist cached MAL anime metadata."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        str(anime_id): {
+            "fetched_at": fetched_at,
+            "score": info.score,
+            "rank": info.rank,
+            "popularity": info.popularity,
+        }
+        for anime_id, (fetched_at, info) in cache.items()
+    }
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, indent=2, sort_keys=True)
+        file.write("\n")
+
+
+def resolve_cached_anime_info(
+    anime_id: int,
+    *,
+    client_id: str,
+    cache_path: Path,
+    app_settings: AppSettings | None = None,
+    now: float | None = None,
+) -> MALAnimeInfo:
+    """Return cached MAL anime metadata, refreshing stale entries."""
+    current_time = time.time() if now is None else now
+    cache = load_anime_cache(cache_path)
+    cached = cache.get(anime_id)
+    if cached is not None:
+        fetched_at, info = cached
+        if current_time - fetched_at < MAL_ANIME_CACHE_TTL_SECONDS:
+            return info
+
+    info = fetch_anime_info(
+        anime_id,
+        client_id=client_id,
+        app_settings=app_settings,
+    )
+    cache[anime_id] = (current_time, info)
+    save_anime_cache(cache_path, cache)
+    return info
+
+
 def _coerce_string(value: object) -> str:
     if isinstance(value, str):
         return value
@@ -450,6 +572,20 @@ def _extract_user_picture(payload: dict[str, object]) -> str:
                     if stripped:
                         return stripped
     return ""
+
+
+def _coerce_optional_float(value: object) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _coerce_optional_int(value: object) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return None
 
 
 @dataclass(slots=True, frozen=True)

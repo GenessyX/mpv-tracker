@@ -10,16 +10,19 @@ from typing import TYPE_CHECKING
 from mpv_tracker.config import (
     APP_SETTINGS_FILE_NAME,
     DB_FILE_NAME,
+    MAL_ANIME_CACHE_FILE_NAME,
     MAL_SETTINGS_FILE_NAME,
     RESUME_BACKTRACK_SECONDS,
     default_data_dir,
 )
 from mpv_tracker.library import LibraryRepository
 from mpv_tracker.mal import (
+    MALDataError,
     MALSyncError,
     hydrate_current_user,
     load_settings,
     parse_anime_reference,
+    resolve_cached_anime_info,
     save_settings,
     update_anime_progress,
 )
@@ -28,6 +31,7 @@ from mpv_tracker.models import (
     Episode,
     EpisodeProgress,
     LibraryEntry,
+    MALAnimeInfo,
     MALSettings,
     SeriesDetail,
     SeriesProgress,
@@ -66,6 +70,7 @@ class TrackerService:
 
     repository: LibraryRepository
     mal_settings_path: Path | None = None
+    mal_anime_cache_path: Path | None = None
     app_settings_path: Path | None = None
 
     @classmethod
@@ -75,6 +80,7 @@ class TrackerService:
         return cls(
             repository=LibraryRepository(data_dir / DB_FILE_NAME),
             mal_settings_path=data_dir / MAL_SETTINGS_FILE_NAME,
+            mal_anime_cache_path=data_dir / MAL_ANIME_CACHE_FILE_NAME,
             app_settings_path=data_dir / APP_SETTINGS_FILE_NAME,
         )
 
@@ -219,8 +225,11 @@ class TrackerService:
         state = load_state(entry.directory)
         episodes = discover_episodes(entry.directory)
         suggested_episode = None
+        mal_anime_info = None
         if episodes:
             suggested_episode = select_episode(episodes, state, selector=None)
+        if entry.mal_anime_id is not None:
+            mal_anime_info = self._resolve_mal_anime_info(entry.mal_anime_id)
         current_episode, current_position_seconds = current_progress(state)
         episode_states = state.get("episodes", {})
         if not isinstance(episode_states, dict):
@@ -255,6 +264,7 @@ class TrackerService:
             current_episode=current_episode,
             current_position_seconds=current_position_seconds,
             suggested_episode=suggested_episode,
+            mal_anime_info=mal_anime_info,
             episodes=detailed_episodes,
         )
 
@@ -327,6 +337,11 @@ class TrackerService:
             return self.app_settings_path
         return default_data_dir() / APP_SETTINGS_FILE_NAME
 
+    def _resolve_mal_anime_cache_path(self) -> Path:
+        if self.mal_anime_cache_path is not None:
+            return self.mal_anime_cache_path
+        return default_data_dir() / MAL_ANIME_CACHE_FILE_NAME
+
     def _sync_series_progress_to_mal(self, entry: LibraryEntry) -> None:
         if entry.mal_anime_id is None:
             return
@@ -355,6 +370,21 @@ class TrackerService:
             )
         except MALSyncError:
             return
+
+    def _resolve_mal_anime_info(self, anime_id: int) -> MALAnimeInfo | None:
+        settings = self.load_mal_settings()
+        client_id = settings.client_id.strip()
+        if not client_id:
+            return None
+        try:
+            return resolve_cached_anime_info(
+                anime_id,
+                client_id=client_id,
+                cache_path=self._resolve_mal_anime_cache_path(),
+                app_settings=self.load_app_settings(),
+            )
+        except MALDataError:
+            return None
 
 
 def _resolve_start_position(state: dict[str, object], episode: Episode) -> float:
