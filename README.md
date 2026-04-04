@@ -41,6 +41,35 @@ Useful TUI features:
 Progress is persisted through the same `.mpv-tracker.json` state file used by
 the CLI.
 
+
+### Showcase
+
+<img src="demo/demo/showcase.gif" alt="Main TUI showcase" width="700" />
+
+### Add Series
+
+<img src="demo/demo/add-series.gif" alt="Add a MAL-linked series" width="700" />
+
+### MAL Auth
+
+<img src="demo/demo/mal-auth.gif" alt="MyAnimeList authentication screen" width="700" />
+
+## Demo
+
+This repo includes `vhs` tapes you can use to generate short terminal demos:
+
+- `demo/showcase.tape`: main TUI flow using a tracked MAL-linked series
+- `demo/mal-auth.tape`: MAL settings/authentication screen walkthrough
+- `demo/add-series.tape`: add a new MAL-linked series from inside the TUI
+
+Example commands:
+
+```bash
+vhs demo/showcase.tape
+vhs demo/mal-auth.tape
+vhs demo/add-series.tape
+```
+
 ## CLI Commands
 
 `add`
