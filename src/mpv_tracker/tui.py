@@ -524,6 +524,8 @@ class EditSeriesScreen(Screen[None]):
 class MALSettingsScreen(Screen[None]):
     """Screen for entering MyAnimeList API credentials."""
 
+    AUTO_FOCUS = ""
+
     BINDINGS: ClassVar[list[BINDING]] = [
         ("escape", "cancel", "Cancel"),
         ("ctrl+s", "submit", "Save"),
@@ -558,7 +560,6 @@ class MALSettingsScreen(Screen[None]):
     def on_mount(self) -> None:
         settings = self._tracker_app().service.load_mal_settings()
         self.query_one("#mal-client-id", Input).value = settings.client_id
-        self.query_one("#mal-client-id", Input).focus()
         self._update_account_status()
         self._refresh_avatar_preview()
 
@@ -760,7 +761,7 @@ class MALSettingsScreen(Screen[None]):
         except ImportError:
             self._tracker_app().call_from_thread(
                 self._update_avatar_widget_text,
-                "Avatar preview needs `rich-pixels`.",
+                "Avatar preview needs `textual-image` or `rich-pixels`.",
             )
             return
         except Exception as error:  # noqa: BLE001
@@ -1854,7 +1855,15 @@ def _help_text() -> str:
 
 
 def _avatar_renderable(path: Path) -> object:
-    rich_pixels = import_module("rich_pixels")
+    try:
+        textual_image = import_module("textual_image.renderable")
+        return textual_image.Image(str(path), width=36)
+    except ImportError as error:
+        try:
+            rich_pixels = import_module("rich_pixels")
+        except ImportError:
+            raise error from error
+
     image_module = import_module("PIL.Image")
     image = image_module.open(path)
     try:

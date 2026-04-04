@@ -83,6 +83,7 @@ repos:
           - rich-pixels==3.0.1
           - rich-rst==1.3.2
           - textual==8.2.2
+          - textual-image==0.8.5
           - typing-extensions==4.15.0
           - uc-micro-py==2.0.0
   - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
