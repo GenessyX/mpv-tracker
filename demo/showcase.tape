@@ -2,8 +2,8 @@ Output "demo/showcase.gif"
 
 Set Shell "bash"
 Set FontSize 18
-Set Width 2200
-Set Height 1400
+Set Width 1800
+Set Height 950
 Set Padding 30
 Set TypingSpeed 0ms
 Set Framerate 30
@@ -17,7 +17,47 @@ Type "mpv-tracker"
 Enter
 Sleep 2s
 
-# Library view, move to Dragon Ball.
+# Open the add-series screen and show directory suggestions plus MAL link entry.
+Type "a"
+Sleep 1s
+Type "Jujutsu Kaisen S3"
+Sleep 600ms
+Tab
+Sleep 300ms
+Type "/mnt/ssd/anime"
+Sleep 800ms
+Type "/Jujutsu Kaisen"
+Sleep 1200ms
+Down
+Sleep 600ms
+Right
+Sleep 1000ms
+Tab
+Sleep 300ms
+Tab
+Sleep 300ms
+Tab
+Sleep 300ms
+Type "https://myanimelist.net/anime/57658/Jujutsu_Kaisen__Shimetsu_Kaiyuu_-_Zenpen"
+Sleep 800ms
+Ctrl+S
+Sleep 2s
+
+# Show the MAL login / account screen.
+Type "m"
+Sleep 3s
+Tab
+Sleep 400ms
+Right
+Sleep 400ms
+Right
+Sleep 400ms
+Left
+Sleep 800ms
+Escape
+Sleep 1s
+
+# Move to Dragon Ball and open the detail view.
 Down
 Sleep 800ms
 Enter
