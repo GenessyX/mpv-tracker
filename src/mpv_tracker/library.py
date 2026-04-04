@@ -29,7 +29,8 @@ class LibraryRepository:
                     slug TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     directory TEXT NOT NULL UNIQUE,
-                    mal_anime_id INTEGER
+                    mal_anime_id INTEGER,
+                    start_chapter_index INTEGER
                 )
                 """,
             )
@@ -41,19 +42,25 @@ class LibraryRepository:
                 connection.execute(
                     "ALTER TABLE library ADD COLUMN mal_anime_id INTEGER",
                 )
+            if "start_chapter_index" not in columns:
+                connection.execute(
+                    "ALTER TABLE library ADD COLUMN start_chapter_index INTEGER",
+                )
 
     def add(self, entry: LibraryEntry) -> None:
         with self._connect() as connection:
             connection.execute(
                 (
-                    "INSERT INTO library (slug, title, directory, mal_anime_id) "
-                    "VALUES (?, ?, ?, ?)"
+                    "INSERT INTO library "
+                    "(slug, title, directory, mal_anime_id, start_chapter_index) "
+                    "VALUES (?, ?, ?, ?, ?)"
                 ),
                 (
                     entry.slug,
                     entry.title,
                     str(entry.directory),
                     entry.mal_anime_id,
+                    entry.start_chapter_index,
                 ),
             )
 
@@ -62,7 +69,8 @@ class LibraryRepository:
             cursor = connection.execute(
                 (
                     "UPDATE library "
-                    "SET slug = ?, title = ?, directory = ?, mal_anime_id = ? "
+                    "SET slug = ?, title = ?, directory = ?, mal_anime_id = ?, "
+                    "start_chapter_index = ? "
                     "WHERE slug = ?"
                 ),
                 (
@@ -70,6 +78,7 @@ class LibraryRepository:
                     entry.title,
                     str(entry.directory),
                     entry.mal_anime_id,
+                    entry.start_chapter_index,
                     current_slug,
                 ),
             )
@@ -79,7 +88,7 @@ class LibraryRepository:
         with self._connect() as connection:
             row = connection.execute(
                 (
-                    "SELECT slug, title, directory, mal_anime_id "
+                    "SELECT slug, title, directory, mal_anime_id, start_chapter_index "
                     "FROM library WHERE slug = ?"
                 ),
                 (slug,),
@@ -91,6 +100,7 @@ class LibraryRepository:
             title=row["title"],
             directory=Path(row["directory"]),
             mal_anime_id=row["mal_anime_id"],
+            start_chapter_index=row["start_chapter_index"],
         )
 
     def remove(self, slug: str) -> bool:
@@ -105,7 +115,8 @@ class LibraryRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 (
-                    "SELECT slug, title, directory, mal_anime_id FROM library "
+                    "SELECT slug, title, directory, mal_anime_id, start_chapter_index "
+                    "FROM library "
                     "ORDER BY title COLLATE NOCASE"
                 ),
             ).fetchall()
@@ -115,6 +126,7 @@ class LibraryRepository:
                 title=row["title"],
                 directory=Path(row["directory"]),
                 mal_anime_id=row["mal_anime_id"],
+                start_chapter_index=row["start_chapter_index"],
             )
             for row in rows
         ]

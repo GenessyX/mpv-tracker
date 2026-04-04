@@ -53,12 +53,15 @@ class MPVWatcher:
         episode_name: str,
         playlist_start: int,
         start_position_seconds: float = 0.0,
+        preferred_start_chapter_index: int | None = None,
     ) -> None:
         self._media_directory = media_directory
         self._episode_name = episode_name
         self._playlist_start = playlist_start
         self._start_position_seconds = start_position_seconds
+        self._preferred_start_chapter_index = preferred_start_chapter_index
         self._initial_seek_applied = start_position_seconds <= 0
+        self._chapter_seek_episode_name: str | None = None
 
     def watch(
         self,
@@ -111,21 +114,13 @@ class MPVWatcher:
                     message = self._read_message(client)
                     if message is None:
                         continue
-                    updated = self._handle_message(observed, message)
-                    if updated is not None:
-                        latest = updated
-                        if on_update is not None:
-                            on_update(latest)
-                    seek_snapshot = self._maybe_apply_initial_seek(
+                    latest = self._apply_runtime_updates(
                         client,
                         observed,
                         message,
+                        latest,
+                        on_update,
                     )
-                    if seek_snapshot is None:
-                        continue
-                    latest = seek_snapshot
-                    if on_update is not None:
-                        on_update(latest)
 
                 return self._drain_messages(client, observed, latest, on_update)
 
@@ -206,6 +201,75 @@ class MPVWatcher:
         self._initial_seek_applied = True
         observed.position_seconds = self._start_position_seconds
         return _snapshot_from_observed_state(observed)
+
+    def _maybe_apply_preferred_start_chapter(
+        self,
+        client: socket.socket,
+        observed: _ObservedPlaybackState,
+        message: dict[str, object],
+    ) -> PlaybackSnapshot | None:
+        preferred_start_chapter_index = self._preferred_start_chapter_index
+        if preferred_start_chapter_index is None:
+            return None
+        if self._chapter_seek_episode_name == observed.episode_name:
+            return None
+        if (
+            observed.episode_name == self._episode_name
+            and self._start_position_seconds > 0
+        ):
+            return None
+
+        event_name = message.get("event")
+        property_name = message.get("name")
+        should_seek = event_name == "property-change" and property_name in {
+            "time-pos",
+            "duration",
+        }
+        if not should_seek:
+            return None
+
+        self._send_command(
+            client,
+            ["set_property", "chapter", preferred_start_chapter_index],
+        )
+        self._chapter_seek_episode_name = observed.episode_name
+        observed.position_seconds = 0.0
+        return _snapshot_from_observed_state(observed)
+
+    def _apply_runtime_updates(
+        self,
+        client: socket.socket,
+        observed: _ObservedPlaybackState,
+        message: dict[str, object],
+        latest: PlaybackSnapshot,
+        on_update: Callable[[PlaybackSnapshot], None] | None,
+    ) -> PlaybackSnapshot:
+        updated = self._handle_message(observed, message)
+        if updated is not None:
+            latest = updated
+            if on_update is not None:
+                on_update(latest)
+
+        seek_snapshot = self._maybe_apply_initial_seek(
+            client,
+            observed,
+            message,
+        )
+        if seek_snapshot is not None:
+            latest = seek_snapshot
+            if on_update is not None:
+                on_update(latest)
+
+        chapter_snapshot = self._maybe_apply_preferred_start_chapter(
+            client,
+            observed,
+            message,
+        )
+        if chapter_snapshot is not None:
+            latest = chapter_snapshot
+            if on_update is not None:
+                on_update(latest)
+        return latest
 
     def _send_command(self, client: socket.socket, command: list[object]) -> None:
         payload = json.dumps({"command": command}).encode("utf-8") + b"\n"

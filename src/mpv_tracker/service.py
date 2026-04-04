@@ -91,6 +91,7 @@ class TrackerService:
         directory: Path,
         slug: str | None,
         mal_anime: str | None = None,
+        start_chapter: int | None = None,
     ) -> LibraryEntry:
         """Register a series in the global library index."""
         resolved_directory = directory.expanduser().resolve()
@@ -108,6 +109,7 @@ class TrackerService:
             title=title.strip(),
             directory=resolved_directory,
             mal_anime_id=parse_anime_reference(mal_anime),
+            start_chapter_index=_parse_start_chapter(start_chapter),
         )
         try:
             self.repository.add(entry)
@@ -126,7 +128,7 @@ class TrackerService:
         mal_anime: str | None = None,
     ) -> LibraryEntry:
         """Update tracked series metadata."""
-        self.resolve_entry(current_slug)
+        existing_entry = self.resolve_entry(current_slug)
         resolved_directory = directory.expanduser().resolve()
         if not resolved_directory.is_dir():
             msg = f"Directory does not exist: {resolved_directory}"
@@ -142,6 +144,7 @@ class TrackerService:
             title=title.strip(),
             directory=resolved_directory,
             mal_anime_id=parse_anime_reference(mal_anime),
+            start_chapter_index=existing_entry.start_chapter_index,
         )
         try:
             updated = self.repository.update(current_slug, entry)
@@ -287,6 +290,7 @@ class TrackerService:
             episode_name=episode.label,
             playlist_start=playlist_start,
             start_position_seconds=start_position,
+            preferred_start_chapter_index=entry.start_chapter_index,
         )
         previous_snapshot: tuple[str, float, float | None, bool] | None = None
 
@@ -333,6 +337,24 @@ class TrackerService:
         """Synchronize watched episode count to MAL for a linked series."""
         entry = self.resolve_entry(slug)
         self._sync_series_progress_to_mal(entry)
+
+    def update_series_preferences(
+        self,
+        slug: str,
+        *,
+        start_chapter: int | None,
+    ) -> LibraryEntry:
+        """Update per-series preferences."""
+        entry = self.resolve_entry(slug)
+        updated = LibraryEntry(
+            slug=entry.slug,
+            title=entry.title,
+            directory=entry.directory,
+            mal_anime_id=entry.mal_anime_id,
+            start_chapter_index=_parse_start_chapter(start_chapter),
+        )
+        self.repository.update(slug, updated)
+        return updated
 
     def _resolve_mal_settings_path(self) -> Path:
         if self.mal_settings_path is not None:
@@ -447,3 +469,12 @@ def _coerce_seconds(value: object) -> float:
     if isinstance(value, int | float):
         return max(float(value), 0.0)
     return 0.0
+
+
+def _parse_start_chapter(value: int | None) -> int | None:
+    if value is None:
+        return None
+    if value <= 0:
+        msg = "Start chapter must be a positive integer."
+        raise ValueError(msg)
+    return value - 1

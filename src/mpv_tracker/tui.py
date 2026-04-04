@@ -927,6 +927,7 @@ class SeriesDetailScreen(Screen[None]):
         ("escape", "pop_screen", "Back"),
         ("e", "edit_series", "Edit"),
         ("i", "show_info", "Info"),
+        ("o", "show_preferences", "Prefs"),
         ("left", "focus_previous_action", "Previous"),
         ("p", "play_selected", "Play"),
         ("right", "focus_next_action", "Next"),
@@ -946,10 +947,12 @@ class SeriesDetailScreen(Screen[None]):
             yield Static("", id="detail-summary")
             yield Static("", id="detail-directory")
             yield Static("", id="detail-mal")
+            yield Static("", id="detail-preferences")
             yield Static("", id="playback-status")
             with Horizontal(id="detail-actions"):
                 yield Button("Play", id="play", variant="primary")
                 yield Button("Info", id="info")
+                yield Button("Prefs", id="preferences")
                 yield Button("Edit", id="edit")
                 yield Button("Back", id="back")
                 yield Button("Refresh", id="refresh")
@@ -976,6 +979,13 @@ class SeriesDetailScreen(Screen[None]):
                     f"{mal_text}\n{_format_mal_anime_info(detail.mal_anime_info)}"
                 )
         self.query_one("#detail-mal", Static).update(mal_text)
+        preferences_text = "Preferences: default playback"
+        if detail.entry.start_chapter_index is not None:
+            preferences_text = (
+                f"Preferences: start fresh episodes from chapter "
+                f"{detail.entry.start_chapter_index + 1}"
+            )
+        self.query_one("#detail-preferences", Static).update(preferences_text)
         playback_status = (
             "Choose an episode and press Play. Enter on a row also starts playback."
         )
@@ -1010,6 +1020,9 @@ class SeriesDetailScreen(Screen[None]):
     def action_edit_series(self) -> None:
         self._tracker_app().push_screen(EditSeriesScreen(self.slug))
 
+    def action_show_preferences(self) -> None:
+        self._tracker_app().push_screen(SeriesPreferencesScreen(self.slug))
+
     def action_show_info(self) -> None:
         if self._detail is None or self._detail.mal_anime_info is None:
             return
@@ -1025,6 +1038,7 @@ class SeriesDetailScreen(Screen[None]):
         focused = self.focused
         play_button = self.query_one("#play", Button)
         info_button = self.query_one("#info", Button)
+        preferences_button = self.query_one("#preferences", Button)
         edit_button = self.query_one("#edit", Button)
         back_button = self.query_one("#back", Button)
         refresh_button = self.query_one("#refresh", Button)
@@ -1032,6 +1046,9 @@ class SeriesDetailScreen(Screen[None]):
             info_button.focus()
             return
         if focused is info_button:
+            preferences_button.focus()
+            return
+        if focused is preferences_button:
             edit_button.focus()
             return
         if focused is edit_button:
@@ -1048,6 +1065,7 @@ class SeriesDetailScreen(Screen[None]):
         focused = self.focused
         play_button = self.query_one("#play", Button)
         info_button = self.query_one("#info", Button)
+        preferences_button = self.query_one("#preferences", Button)
         edit_button = self.query_one("#edit", Button)
         back_button = self.query_one("#back", Button)
         refresh_button = self.query_one("#refresh", Button)
@@ -1057,8 +1075,11 @@ class SeriesDetailScreen(Screen[None]):
         if focused is info_button:
             play_button.focus()
             return
-        if focused is edit_button:
+        if focused is preferences_button:
             info_button.focus()
+            return
+        if focused is edit_button:
+            preferences_button.focus()
             return
         if focused is back_button:
             edit_button.focus()
@@ -1079,6 +1100,10 @@ class SeriesDetailScreen(Screen[None]):
     @on(Button.Pressed, "#info")
     def handle_info_button(self) -> None:
         self.action_show_info()
+
+    @on(Button.Pressed, "#preferences")
+    def handle_preferences_button(self) -> None:
+        self.action_show_preferences()
 
     @on(Button.Pressed, "#edit")
     def handle_edit_button(self) -> None:
@@ -1212,6 +1237,100 @@ class SeriesInfoScreen(Screen[None]):
         return cast("MPVTrackerApp", self.app)
 
 
+class SeriesPreferencesScreen(Screen[None]):
+    """Per-series preference editor."""
+
+    BINDINGS: ClassVar[list[BINDING]] = [
+        ("escape", "cancel", "Cancel"),
+        ("ctrl+s", "submit", "Save"),
+    ]
+
+    def __init__(self, slug: str) -> None:
+        super().__init__()
+        self.slug = slug
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Vertical(id="app-settings-view"):
+            yield Static("Series Preferences", id="detail-title")
+            yield Static(
+                (
+                    "Configure how fresh episodes should start. "
+                    "Leave empty to start from the beginning."
+                ),
+                id="app-settings-status",
+            )
+            yield Input(
+                placeholder="Start chapter, for example 2",
+                id="series-start-chapter",
+            )
+            with Horizontal(id="detail-actions"):
+                yield Button("Save", id="save-series-preferences", variant="primary")
+                yield Button("Cancel", id="cancel-series-preferences")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        entry = self._tracker_app().service.resolve_entry(self.slug)
+        if entry.start_chapter_index is not None:
+            self.query_one("#series-start-chapter", Input).value = str(
+                entry.start_chapter_index + 1,
+            )
+        self.query_one("#series-start-chapter", Input).focus()
+
+    def action_cancel(self) -> None:
+        self._tracker_app().pop_screen()
+
+    def action_submit(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#save-series-preferences")
+    def handle_save_button(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#cancel-series-preferences")
+    def handle_cancel_button(self) -> None:
+        self._tracker_app().pop_screen()
+
+    @on(Input.Submitted, "#series-start-chapter")
+    def handle_input_submitted(self) -> None:
+        self._submit()
+
+    def _submit(self) -> None:
+        raw_value = self.query_one("#series-start-chapter", Input).value.strip()
+        start_chapter: int | None = None
+        if raw_value:
+            if not raw_value.isdigit():
+                self.query_one("#app-settings-status", Static).update(
+                    "Start chapter must be a positive integer.",
+                )
+                return
+            start_chapter = int(raw_value)
+        try:
+            entry = self._tracker_app().service.update_series_preferences(
+                self.slug,
+                start_chapter=start_chapter,
+            )
+        except ValueError as error:
+            self.query_one("#app-settings-status", Static).update(str(error))
+            return
+
+        app = self._tracker_app()
+        message = "Updated series preferences."
+        if entry.start_chapter_index is not None:
+            message = (
+                f"Updated preferences for {entry.title}: start from chapter "
+                f"{entry.start_chapter_index + 1}."
+            )
+        app.library_message = message
+        app.pop_screen()
+        if isinstance(app.screen, SeriesDetailScreen):
+            app.screen.load_detail()
+        app.refresh_library()
+
+    def _tracker_app(self) -> MPVTrackerApp:
+        return cast("MPVTrackerApp", self.app)
+
+
 class MPVTrackerApp(App[None]):
     """Top-level Textual application."""
 
@@ -1251,6 +1370,7 @@ class MPVTrackerApp(App[None]):
     }
 
     #library-status, #detail-summary, #detail-directory, #detail-mal,
+    #detail-preferences,
     #playback-status, #add-series-status, #confirm-remove-message,
     #confirm-remove-status, #mal-settings-status, #app-settings-status,
     #settings-section-title, #settings-section-help {
@@ -1266,7 +1386,7 @@ class MPVTrackerApp(App[None]):
         color: #9fb3c8;
     }
 
-    #detail-directory, #detail-mal {
+    #detail-directory, #detail-mal, #detail-preferences {
         color: #9fb3c8;
     }
 

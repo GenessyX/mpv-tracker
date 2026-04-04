@@ -17,6 +17,7 @@ class LibraryEntry:
     title: str
     directory: Path
     mal_anime_id: int | None = None
+    start_chapter_index: int | None = None
 
 
 @dataclass(slots=True, frozen=True)

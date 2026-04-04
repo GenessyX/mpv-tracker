@@ -97,6 +97,23 @@ def test_update_series_updates_title_slug_and_mal_anime(tmp_path: Path) -> None:
     assert service.resolve_entry("sousou-no-frieren") == updated
 
 
+def test_update_series_preferences_persists_start_chapter(tmp_path: Path) -> None:
+    series_dir = tmp_path / "frieren"
+    series_dir.mkdir()
+
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(repository=repository)
+    service.add_series(title="Frieren", directory=series_dir, slug="frieren")
+
+    updated = service.update_series_preferences(
+        "frieren",
+        start_chapter=2,
+    )
+
+    assert updated.start_chapter_index == 1
+    assert service.resolve_entry("frieren").start_chapter_index == 1
+
+
 def test_sync_series_progress_to_mal_updates_watched_count(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
