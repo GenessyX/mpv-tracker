@@ -82,7 +82,9 @@ class LibraryScreen(Screen[None]):
         ("a", "add_series", "Add"),
         ("e", "edit_series", "Edit"),
         ("d", "remove_series", "Remove"),
+        ("h", "help", "Help"),
         ("m", "mal_login", "MAL"),
+        ("question_mark", "help", "Help"),
         ("s", "settings", "Settings"),
         ("enter", "open_selected", "Open"),
         ("r", "refresh", "Refresh"),
@@ -133,6 +135,9 @@ class LibraryScreen(Screen[None]):
 
     def action_settings(self) -> None:
         self._tracker_app().push_screen(AppSettingsScreen())
+
+    def action_help(self) -> None:
+        self._tracker_app().push_screen(HelpScreen())
 
     def action_edit_series(self) -> None:
         list_view = self.query_one("#series-list", ListView)
@@ -1450,6 +1455,25 @@ class SeriesPreferencesScreen(Screen[None]):
         return cast("MPVTrackerApp", self.app)
 
 
+class HelpScreen(Screen[None]):
+    """Quick reference for the TUI."""
+
+    BINDINGS: ClassVar[list[BINDING]] = [
+        ("escape", "close_screen", "Back"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Vertical(id="detail-view"):
+            yield Static("Help", id="detail-title")
+            with VerticalScroll(id="series-info-scroll"):
+                yield Static(_help_text(), id="series-info")
+        yield Footer()
+
+    def action_close_screen(self) -> None:
+        self.app.pop_screen()
+
+
 class MPVTrackerApp(App[None]):
     """Top-level Textual application."""
 
@@ -1788,6 +1812,54 @@ def _format_duration(value: int | None) -> str:
 
 def _terminal_hyperlink(url: str, label: str) -> str:
     return f'[link="{escape(url)}"]{escape(label)}[/link]'
+
+
+def _help_text() -> str:
+    sections = [
+        "Library",
+        "  Enter: Open selected series",
+        "  a: Add series",
+        "  e: Edit selected series",
+        "  d: Remove selected series",
+        "  m: MAL account",
+        "  s: Settings",
+        "  h or ?: Help",
+        "  q: Quit",
+        "",
+        "Series Detail",
+        "  p: Play selected episode",
+        "  i: Open MAL info screen",
+        "  m: Open MAL page in browser",
+        "  o: Open series preferences",
+        "  e: Edit series",
+        "  r: Refresh detail",
+        "  Left / Right: Move across action buttons",
+        "  Enter on episode list: Play highlighted episode",
+        "",
+        "MAL",
+        "  Authenticate from the library screen with m before using MAL sync features",
+        "  Ratings, profile actions, and watched-count sync require MAL login",
+        "  Linked series show MAL ID, score, rank, and popularity",
+        "  Rating buttons set the MAL score directly",
+        "  Info screen shows cached synopsis, titles, studios, genres, and more",
+        "  Refresh inside the info screen forces a metadata cache refresh",
+        "",
+        "Playback",
+        "  Episodes resume from saved progress automatically",
+        "  Linked series sync watched count to MAL after playback",
+        "  Series preferences can start fresh episodes from a configured chapter",
+        "",
+        "Add / Edit Series",
+        "  Directory matches appear as you type",
+        "  Down focuses the directory suggestions",
+        "  Right descends into the highlighted directory",
+        "  Ctrl+S saves the form",
+        "",
+        "General",
+        "  Escape returns to the previous screen",
+        "  Ctrl+S saves in forms and settings screens",
+    ]
+    return "\n".join(sections)
 
 
 def _avatar_renderable(path: Path) -> object:
