@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "mpv-tracker"
-version = "0.1.0"
+version = "1.0.0"
 description = "CLI tools that allows to track episodes in a directory"
 readme = "README.md"
 requires-python = ">= 3.12"
