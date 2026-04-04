@@ -80,6 +80,9 @@ class MPVWatcher:
                         f"--playlist-start={self._playlist_start}",
                         str(self._media_directory),
                     ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
             except FileNotFoundError as error:
                 msg = "The `mpv` executable was not found in PATH."
