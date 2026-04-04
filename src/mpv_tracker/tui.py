@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -39,6 +40,14 @@ class EpisodeListItem(ListItem):
     def __init__(self, episode_progress: EpisodeProgress) -> None:
         self.episode_label = episode_progress.episode.label
         super().__init__(Static(_format_episode_row(episode_progress)))
+
+
+class DirectoryMatchItem(ListItem):
+    """List row for a matching filesystem directory."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        super().__init__(Static(str(path)))
 
 
 class LibraryScreen(Screen[None]):
@@ -111,6 +120,8 @@ class AddSeriesScreen(Screen[None]):
     BINDINGS: ClassVar[list[BINDING]] = [
         ("escape", "cancel", "Cancel"),
         ("ctrl+s", "submit", "Save"),
+        ("down", "focus_directory_matches", "Directory Matches"),
+        ("right", "descend_directory", "Enter Directory"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -118,11 +129,15 @@ class AddSeriesScreen(Screen[None]):
         with Vertical(id="add-series-view"):
             yield Static("Add Series", id="detail-title")
             yield Static(
-                "Enter a title and directory. Slug is optional.",
+                (
+                    "Enter a title and directory. Slug is optional. "
+                    "Directory matches appear below as you type."
+                ),
                 id="add-series-status",
             )
             yield Input(placeholder="Series title", id="add-title")
             yield Input(placeholder="/path/to/series", id="add-directory")
+            yield ListView(id="directory-matches")
             yield Input(placeholder="optional-slug", id="add-slug")
             with Horizontal(id="detail-actions"):
                 yield Button("Save", id="save-series", variant="primary")
@@ -131,12 +146,21 @@ class AddSeriesScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self.query_one("#add-title", Input).focus()
+        self._update_directory_matches("")
 
     def action_cancel(self) -> None:
         self._tracker_app().pop_screen()
 
     def action_submit(self) -> None:
         self._submit()
+
+    def action_focus_directory_matches(self) -> None:
+        matches_view = self.query_one("#directory-matches", ListView)
+        if matches_view.children:
+            self._activate_directory_matches_and_focus()
+
+    def action_descend_directory(self) -> None:
+        self._descend_into_highlighted_directory()
 
     @on(Button.Pressed, "#save-series")
     def handle_save_button(self) -> None:
@@ -148,10 +172,24 @@ class AddSeriesScreen(Screen[None]):
 
     @on(Input.Submitted)
     def handle_input_submitted(self, event: Input.Submitted) -> None:
+        if (
+            event.input.id == "add-directory"
+            and self._apply_highlighted_directory_match()
+        ):
+            return
         if event.input.id == "add-slug":
             self._submit()
             return
         self.focus_next()
+
+    @on(Input.Changed, "#add-directory")
+    def handle_directory_changed(self, event: Input.Changed) -> None:
+        self._update_directory_matches(event.value)
+
+    @on(ListView.Selected, "#directory-matches")
+    def handle_directory_selected(self, event: ListView.Selected) -> None:
+        if isinstance(event.item, DirectoryMatchItem):
+            self._apply_directory_match(event.item.path)
 
     def _submit(self) -> None:
         title = self.query_one("#add-title", Input).value.strip()
@@ -184,8 +222,61 @@ class AddSeriesScreen(Screen[None]):
     def _set_status(self, message: str) -> None:
         self.query_one("#add-series-status", Static).update(message)
 
+    def _update_directory_matches(self, value: str) -> None:
+        matches_view = self.query_one("#directory-matches", ListView)
+        matches_view.index = None
+        matches_view.clear()
+        matches = _find_directory_matches(value)
+        for path in matches:
+            matches_view.append(DirectoryMatchItem(path))
+        if matches:
+            self.call_after_refresh(self._activate_directory_matches)
+
+    def _apply_highlighted_directory_match(self) -> bool:
+        matches_view = self.query_one("#directory-matches", ListView)
+        highlighted = matches_view.highlighted_child
+        if isinstance(highlighted, DirectoryMatchItem):
+            self._apply_directory_match(highlighted.path)
+            return True
+        return False
+
+    def _descend_into_highlighted_directory(self) -> bool:
+        matches_view = self.query_one("#directory-matches", ListView)
+        highlighted = matches_view.highlighted_child
+        if not isinstance(highlighted, DirectoryMatchItem):
+            return False
+
+        path = highlighted.path
+        directory_input = self.query_one("#add-directory", Input)
+        directory_input.value = _directory_prefix(path)
+        self._update_directory_matches(directory_input.value)
+        if not _find_directory_matches(directory_input.value):
+            directory_input.focus()
+        else:
+            self.call_after_refresh(self._activate_directory_matches_and_focus)
+        return True
+
+    def _apply_directory_match(self, path: Path) -> None:
+        directory_input = self.query_one("#add-directory", Input)
+        directory_input.value = str(path)
+        self._update_directory_matches(str(path))
+        directory_input.focus()
+
     def _tracker_app(self) -> MPVTrackerApp:
         return cast("MPVTrackerApp", self.app)
+
+    def _activate_directory_matches(self) -> None:
+        matches_view = self.query_one("#directory-matches", ListView)
+        if not matches_view.children:
+            return
+        matches_view.index = None
+        matches_view.index = 0
+
+    def _activate_directory_matches_and_focus(self) -> None:
+        self._activate_directory_matches()
+        matches_view = self.query_one("#directory-matches", ListView)
+        if matches_view.children:
+            matches_view.focus()
 
 
 class SeriesDetailScreen(Screen[None]):
@@ -382,6 +473,11 @@ class MPVTrackerApp(App[None]):
     Input {
         margin-bottom: 1;
     }
+
+    #directory-matches {
+        height: 8;
+        margin-bottom: 1;
+    }
     """
 
     BINDINGS: ClassVar[list[BINDING]] = [
@@ -470,3 +566,39 @@ def _format_seconds(value: float) -> str:
     if hours > 0:
         return f"{hours:d}:{minutes:02d}:{seconds:02d}"
     return f"{minutes:d}:{seconds:02d}"
+
+
+def _find_directory_matches(value: str) -> list[Path]:
+    if not value:
+        return []
+
+    expanded = Path(value).expanduser()
+    parent = expanded.parent
+    prefix = expanded.name
+
+    if value.endswith((Path("/").anchor, "/")):
+        parent = expanded
+        prefix = ""
+
+    if not parent.exists() or not parent.is_dir():
+        return []
+
+    try:
+        matches = sorted(
+            child
+            for child in parent.iterdir()
+            if child.is_dir()
+            and not child.name.startswith(".")
+            and child.name.startswith(prefix)
+        )
+    except OSError:
+        return []
+
+    return matches
+
+
+def _directory_prefix(path: Path) -> str:
+    path_text = str(path)
+    if path_text.endswith(os.sep):
+        return path_text
+    return f"{path_text}{os.sep}"
