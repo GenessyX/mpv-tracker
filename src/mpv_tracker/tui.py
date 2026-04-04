@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 import traceback
+import webbrowser
 from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
+from rich.markup import escape
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -511,6 +513,7 @@ class MALSettingsScreen(Screen[None]):
     BINDINGS: ClassVar[list[BINDING]] = [
         ("escape", "cancel", "Cancel"),
         ("ctrl+s", "submit", "Save"),
+        ("o", "open_profile", "Open"),
         ("r", "refresh_profile", "Refresh"),
     ]
 
@@ -529,6 +532,7 @@ class MALSettingsScreen(Screen[None]):
             with Horizontal(id="detail-actions"):
                 yield Button("Save Client ID", id="save-mal-client", variant="primary")
                 yield Button("Authenticate", id="authenticate-mal")
+                yield Button("Open Profile", id="open-mal-profile")
                 yield Button("Refresh Profile", id="refresh-mal-profile")
                 yield Button("Cancel", id="cancel-mal")
             with Vertical(id="mal-account-layout"):
@@ -553,6 +557,9 @@ class MALSettingsScreen(Screen[None]):
     def action_refresh_profile(self) -> None:
         self._refresh_profile()
 
+    def action_open_profile(self) -> None:
+        self._open_profile()
+
     @on(Button.Pressed, "#save-mal-client")
     def handle_save_button(self) -> None:
         self._save_client_id()
@@ -564,6 +571,10 @@ class MALSettingsScreen(Screen[None]):
     @on(Button.Pressed, "#refresh-mal-profile")
     def handle_refresh_profile_button(self) -> None:
         self._refresh_profile()
+
+    @on(Button.Pressed, "#open-mal-profile")
+    def handle_open_profile_button(self) -> None:
+        self._open_profile()
 
     @on(Button.Pressed, "#cancel-mal")
     def handle_cancel_button(self) -> None:
@@ -662,6 +673,20 @@ class MALSettingsScreen(Screen[None]):
 
     def _set_status(self, message: str) -> None:
         self.query_one("#mal-settings-status", Static).update(message)
+
+    def _open_profile(self) -> None:
+        settings = self._tracker_app().service.load_mal_settings()
+        if not settings.user_name:
+            self._set_status("No MAL profile is loaded yet.")
+            return
+        profile = profile_url(settings.user_name)
+        if profile is None:
+            self._set_status("No MAL profile is loaded yet.")
+            return
+        if not webbrowser.open(profile):
+            self._set_status("Failed to open MAL profile in the browser.")
+            return
+        self._set_status("Opened MAL profile in the browser.")
 
     def _update_account_status(self) -> None:
         settings = self._tracker_app().service.load_mal_settings()
@@ -927,6 +952,7 @@ class SeriesDetailScreen(Screen[None]):
         ("escape", "pop_screen", "Back"),
         ("e", "edit_series", "Edit"),
         ("i", "show_info", "Info"),
+        ("m", "open_mal", "Open MAL"),
         ("o", "show_preferences", "Prefs"),
         ("left", "focus_previous_action", "Previous"),
         ("p", "play_selected", "Play"),
@@ -939,6 +965,7 @@ class SeriesDetailScreen(Screen[None]):
         self.slug = slug
         self._detail: SeriesDetail | None = None
         self._playing = False
+        self._mal_linked = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -952,6 +979,7 @@ class SeriesDetailScreen(Screen[None]):
             with Horizontal(id="detail-actions"):
                 yield Button("Play", id="play", variant="primary")
                 yield Button("Info", id="info")
+                yield Button("Open MAL", id="open-mal")
                 yield Button("Prefs", id="preferences")
                 yield Button("Edit", id="edit")
                 yield Button("Back", id="back")
@@ -965,20 +993,23 @@ class SeriesDetailScreen(Screen[None]):
     def load_detail(self) -> None:
         self._detail = self._tracker_app().service.get_series_detail(self.slug)
         detail = self._detail
+        self._mal_linked = detail.entry.mal_anime_id is not None
         self.query_one("#detail-title", Static).update(detail.entry.title)
         self.query_one("#detail-summary", Static).update(_format_detail_summary(detail))
         self.query_one("#detail-directory", Static).update(str(detail.entry.directory))
         mal_text = "MAL: not linked"
         if detail.entry.mal_anime_id is not None:
-            mal_text = (
-                f"MAL: {detail.entry.mal_anime_id} "
-                f"({anime_url(detail.entry.mal_anime_id)})"
-            )
+            mal_url = anime_url(detail.entry.mal_anime_id)
+            link = ""
+            if mal_url is not None:
+                link = f" ({_terminal_hyperlink(mal_url, mal_url)})"
+            mal_text = f"MAL: {detail.entry.mal_anime_id}{link}"
             if detail.mal_anime_info is not None:
                 mal_text = (
                     f"{mal_text}\n{_format_mal_anime_info(detail.mal_anime_info)}"
                 )
         self.query_one("#detail-mal", Static).update(mal_text)
+        self.query_one("#open-mal", Button).display = self._mal_linked
         preferences_text = "Preferences: default playback"
         if detail.entry.start_chapter_index is not None:
             preferences_text = (
@@ -1023,6 +1054,24 @@ class SeriesDetailScreen(Screen[None]):
     def action_show_preferences(self) -> None:
         self._tracker_app().push_screen(SeriesPreferencesScreen(self.slug))
 
+    def action_open_mal(self) -> None:
+        if self._detail is None:
+            return
+        mal_url = anime_url(self._detail.entry.mal_anime_id)
+        if mal_url is None:
+            self.query_one("#playback-status", Static).update(
+                "Series is not linked to MAL.",
+            )
+            return
+        if not webbrowser.open(mal_url):
+            self.query_one("#playback-status", Static).update(
+                "Failed to open MAL page in the browser.",
+            )
+            return
+        self.query_one("#playback-status", Static).update(
+            "Opened MAL page in the browser.",
+        )
+
     def action_show_info(self) -> None:
         if self._detail is None or self._detail.mal_anime_info is None:
             return
@@ -1035,58 +1084,30 @@ class SeriesDetailScreen(Screen[None]):
         )
 
     def action_focus_next_action(self) -> None:
-        focused = self.focused
-        play_button = self.query_one("#play", Button)
-        info_button = self.query_one("#info", Button)
-        preferences_button = self.query_one("#preferences", Button)
-        edit_button = self.query_one("#edit", Button)
-        back_button = self.query_one("#back", Button)
-        refresh_button = self.query_one("#refresh", Button)
-        if focused is play_button:
-            info_button.focus()
-            return
-        if focused is info_button:
-            preferences_button.focus()
-            return
-        if focused is preferences_button:
-            edit_button.focus()
-            return
-        if focused is edit_button:
-            back_button.focus()
-            return
-        if focused is back_button:
-            refresh_button.focus()
-            return
-        if focused is refresh_button:
-            play_button.focus()
-            return
+        buttons = [
+            self.query_one("#play", Button),
+            self.query_one("#info", Button),
+            self.query_one("#preferences", Button),
+            self.query_one("#edit", Button),
+            self.query_one("#back", Button),
+            self.query_one("#refresh", Button),
+        ]
+        if self._mal_linked:
+            buttons.insert(2, self.query_one("#open-mal", Button))
+        self._focus_adjacent_action(buttons, 1)
 
     def action_focus_previous_action(self) -> None:
-        focused = self.focused
-        play_button = self.query_one("#play", Button)
-        info_button = self.query_one("#info", Button)
-        preferences_button = self.query_one("#preferences", Button)
-        edit_button = self.query_one("#edit", Button)
-        back_button = self.query_one("#back", Button)
-        refresh_button = self.query_one("#refresh", Button)
-        if focused is play_button:
-            refresh_button.focus()
-            return
-        if focused is info_button:
-            play_button.focus()
-            return
-        if focused is preferences_button:
-            info_button.focus()
-            return
-        if focused is edit_button:
-            preferences_button.focus()
-            return
-        if focused is back_button:
-            edit_button.focus()
-            return
-        if focused is refresh_button:
-            back_button.focus()
-            return
+        buttons = [
+            self.query_one("#play", Button),
+            self.query_one("#info", Button),
+            self.query_one("#preferences", Button),
+            self.query_one("#edit", Button),
+            self.query_one("#back", Button),
+            self.query_one("#refresh", Button),
+        ]
+        if self._mal_linked:
+            buttons.insert(2, self.query_one("#open-mal", Button))
+        self._focus_adjacent_action(buttons, -1)
 
     def action_play_selected(self) -> None:
         if self._playing:
@@ -1100,6 +1121,10 @@ class SeriesDetailScreen(Screen[None]):
     @on(Button.Pressed, "#info")
     def handle_info_button(self) -> None:
         self.action_show_info()
+
+    @on(Button.Pressed, "#open-mal")
+    def handle_open_mal_button(self) -> None:
+        self.action_open_mal()
 
     @on(Button.Pressed, "#preferences")
     def handle_preferences_button(self) -> None:
@@ -1163,6 +1188,14 @@ class SeriesDetailScreen(Screen[None]):
         if isinstance(highlighted, EpisodeListItem):
             return highlighted.episode_label
         return None
+
+    def _focus_adjacent_action(self, buttons: list[Button], step: int) -> None:
+        focused = self.focused
+        try:
+            index = buttons.index(cast("Button", focused))
+        except ValueError:
+            return
+        buttons[(index + step) % len(buttons)].focus()
 
     def _tracker_app(self) -> MPVTrackerApp:
         return cast("MPVTrackerApp", self.app)
@@ -1538,12 +1571,18 @@ def _mal_account_status(settings: MALSettings) -> str:
         lines.append(f"User: {settings.user_name}")
         profile = profile_url(settings.user_name)
         if profile is not None:
-            lines.append(f"Profile: {profile}")
+            lines.append(f"Profile: {_terminal_hyperlink(profile, profile)}")
     else:
         lines.append("User: not loaded yet. Press Refresh to fetch account details.")
 
     if settings.user_picture:
-        lines.append(f"Avatar: {settings.user_picture}")
+        avatar_link = _terminal_hyperlink(
+            settings.user_picture,
+            settings.user_picture,
+        )
+        lines.append(
+            f"Avatar: {avatar_link}",
+        )
     return "\n".join(lines)
 
 
@@ -1614,6 +1653,10 @@ def _format_duration(value: int | None) -> str:
     if seconds == 0:
         return f"{minutes} min"
     return f"{minutes} min {seconds} sec"
+
+
+def _terminal_hyperlink(url: str, label: str) -> str:
+    return f'[link="{escape(url)}"]{escape(label)}[/link]'
 
 
 def _avatar_renderable(path: Path) -> object:
