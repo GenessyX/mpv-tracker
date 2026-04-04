@@ -35,7 +35,10 @@ _MY_LIST_STATUS_ENDPOINT_TEMPLATE = (
     "https://api.myanimelist.net/v2/anime/{anime_id}/my_list_status"
 )
 _ANIME_DETAILS_ENDPOINT_TEMPLATE = (
-    "https://api.myanimelist.net/v2/anime/{anime_id}?fields=mean,rank,popularity"
+    "https://api.myanimelist.net/v2/anime/{anime_id}?fields="
+    "mean,rank,popularity,synopsis,background,alternative_titles,media_type,"
+    "status,num_episodes,start_date,end_date,source,average_episode_duration,"
+    "rating,studios,genres"
 )
 _DEFAULT_REDIRECT_URI = "http://localhost:1234/callback"
 _TOKEN_EXCHANGE_ATTEMPTS = 3
@@ -475,6 +478,23 @@ def fetch_anime_info(
         score=_coerce_optional_float(parsed.get("mean")),
         rank=_coerce_optional_int(parsed.get("rank")),
         popularity=_coerce_optional_int(parsed.get("popularity")),
+        synopsis=_coerce_string(parsed.get("synopsis")).strip(),
+        background=_coerce_string(parsed.get("background")).strip(),
+        alternative_titles=_extract_alternative_titles(
+            parsed.get("alternative_titles"),
+        ),
+        media_type=_coerce_string(parsed.get("media_type")).strip(),
+        status=_coerce_string(parsed.get("status")).strip(),
+        num_episodes=_coerce_optional_int(parsed.get("num_episodes")),
+        start_date=_coerce_string(parsed.get("start_date")).strip(),
+        end_date=_coerce_string(parsed.get("end_date")).strip(),
+        source=_coerce_string(parsed.get("source")).strip(),
+        average_episode_duration_seconds=_coerce_optional_int(
+            parsed.get("average_episode_duration"),
+        ),
+        rating=_coerce_string(parsed.get("rating")).strip(),
+        studios=_extract_named_items(parsed.get("studios")),
+        genres=_extract_named_items(parsed.get("genres")),
     )
 
 
@@ -502,6 +522,23 @@ def load_anime_cache(path: Path) -> dict[int, tuple[float, MALAnimeInfo]]:
                 score=_coerce_optional_float(value.get("score")),
                 rank=_coerce_optional_int(value.get("rank")),
                 popularity=_coerce_optional_int(value.get("popularity")),
+                synopsis=_coerce_string(value.get("synopsis")).strip(),
+                background=_coerce_string(value.get("background")).strip(),
+                alternative_titles=_coerce_string_list(
+                    value.get("alternative_titles"),
+                ),
+                media_type=_coerce_string(value.get("media_type")).strip(),
+                status=_coerce_string(value.get("status")).strip(),
+                num_episodes=_coerce_optional_int(value.get("num_episodes")),
+                start_date=_coerce_string(value.get("start_date")).strip(),
+                end_date=_coerce_string(value.get("end_date")).strip(),
+                source=_coerce_string(value.get("source")).strip(),
+                average_episode_duration_seconds=_coerce_optional_int(
+                    value.get("average_episode_duration_seconds"),
+                ),
+                rating=_coerce_string(value.get("rating")).strip(),
+                studios=_coerce_string_list(value.get("studios")),
+                genres=_coerce_string_list(value.get("genres")),
             ),
         )
     return cache
@@ -516,6 +553,19 @@ def save_anime_cache(path: Path, cache: dict[int, tuple[float, MALAnimeInfo]]) -
             "score": info.score,
             "rank": info.rank,
             "popularity": info.popularity,
+            "synopsis": info.synopsis,
+            "background": info.background,
+            "alternative_titles": info.alternative_titles,
+            "media_type": info.media_type,
+            "status": info.status,
+            "num_episodes": info.num_episodes,
+            "start_date": info.start_date,
+            "end_date": info.end_date,
+            "source": info.source,
+            "average_episode_duration_seconds": info.average_episode_duration_seconds,
+            "rating": info.rating,
+            "studios": info.studios,
+            "genres": info.genres,
         }
         for anime_id, (fetched_at, info) in cache.items()
     }
@@ -530,13 +580,13 @@ def resolve_cached_anime_info(
     client_id: str,
     cache_path: Path,
     app_settings: AppSettings | None = None,
-    now: float | None = None,
+    force_refresh: bool = False,
 ) -> MALAnimeInfo:
     """Return cached MAL anime metadata, refreshing stale entries."""
-    current_time = time.time() if now is None else now
+    current_time = time.time()
     cache = load_anime_cache(cache_path)
     cached = cache.get(anime_id)
-    if cached is not None:
+    if cached is not None and not force_refresh:
         fetched_at, info = cached
         if current_time - fetched_at < MAL_ANIME_CACHE_TTL_SECONDS:
             return info
@@ -586,6 +636,44 @@ def _coerce_optional_int(value: object) -> int | None:
     if isinstance(value, float):
         return int(value)
     return None
+
+
+def _coerce_string_list(value: object) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    items = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return items or None
+
+
+def _extract_named_items(value: object) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    items = [
+        name.strip()
+        for item in value
+        if isinstance(item, dict)
+        for name in [_coerce_string(item.get("name"))]
+        if name.strip()
+    ]
+    return items or None
+
+
+def _extract_alternative_titles(value: object) -> list[str] | None:
+    if not isinstance(value, dict):
+        return None
+    titles: list[str] = []
+    for key in ("en", "ja"):
+        title = _coerce_string(value.get(key)).strip()
+        if title and title not in titles:
+            titles.append(title)
+    synonyms = value.get("synonyms")
+    if isinstance(synonyms, list):
+        for synonym in synonyms:
+            if isinstance(synonym, str):
+                stripped = synonym.strip()
+                if stripped and stripped not in titles:
+                    titles.append(stripped)
+    return titles or None
 
 
 @dataclass(slots=True, frozen=True)

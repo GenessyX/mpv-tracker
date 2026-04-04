@@ -54,6 +54,19 @@ class MALAnimeInfo:
     score: float | None = None
     rank: int | None = None
     popularity: int | None = None
+    synopsis: str = ""
+    background: str = ""
+    alternative_titles: list[str] | None = None
+    media_type: str = ""
+    status: str = ""
+    num_episodes: int | None = None
+    start_date: str = ""
+    end_date: str = ""
+    source: str = ""
+    average_episode_duration_seconds: int | None = None
+    rating: str = ""
+    studios: list[str] | None = None
+    genres: list[str] | None = None
 
 
 @dataclass(slots=True, frozen=True)

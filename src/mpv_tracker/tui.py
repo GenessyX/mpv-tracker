@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, ListItem, ListView, Static
 
@@ -926,6 +926,7 @@ class SeriesDetailScreen(Screen[None]):
     BINDINGS: ClassVar[list[BINDING]] = [
         ("escape", "pop_screen", "Back"),
         ("e", "edit_series", "Edit"),
+        ("i", "show_info", "Info"),
         ("left", "focus_previous_action", "Previous"),
         ("p", "play_selected", "Play"),
         ("right", "focus_next_action", "Next"),
@@ -948,6 +949,7 @@ class SeriesDetailScreen(Screen[None]):
             yield Static("", id="playback-status")
             with Horizontal(id="detail-actions"):
                 yield Button("Play", id="play", variant="primary")
+                yield Button("Info", id="info")
                 yield Button("Edit", id="edit")
                 yield Button("Back", id="back")
                 yield Button("Refresh", id="refresh")
@@ -1008,13 +1010,28 @@ class SeriesDetailScreen(Screen[None]):
     def action_edit_series(self) -> None:
         self._tracker_app().push_screen(EditSeriesScreen(self.slug))
 
+    def action_show_info(self) -> None:
+        if self._detail is None or self._detail.mal_anime_info is None:
+            return
+        self._tracker_app().push_screen(
+            SeriesInfoScreen(
+                slug=self.slug,
+                title=self._detail.entry.title,
+                anime_info=self._detail.mal_anime_info,
+            ),
+        )
+
     def action_focus_next_action(self) -> None:
         focused = self.focused
         play_button = self.query_one("#play", Button)
+        info_button = self.query_one("#info", Button)
         edit_button = self.query_one("#edit", Button)
         back_button = self.query_one("#back", Button)
         refresh_button = self.query_one("#refresh", Button)
         if focused is play_button:
+            info_button.focus()
+            return
+        if focused is info_button:
             edit_button.focus()
             return
         if focused is edit_button:
@@ -1030,14 +1047,18 @@ class SeriesDetailScreen(Screen[None]):
     def action_focus_previous_action(self) -> None:
         focused = self.focused
         play_button = self.query_one("#play", Button)
+        info_button = self.query_one("#info", Button)
         edit_button = self.query_one("#edit", Button)
         back_button = self.query_one("#back", Button)
         refresh_button = self.query_one("#refresh", Button)
         if focused is play_button:
             refresh_button.focus()
             return
-        if focused is edit_button:
+        if focused is info_button:
             play_button.focus()
+            return
+        if focused is edit_button:
+            info_button.focus()
             return
         if focused is back_button:
             edit_button.focus()
@@ -1054,6 +1075,10 @@ class SeriesDetailScreen(Screen[None]):
     @on(Button.Pressed, "#play")
     def handle_play_button(self) -> None:
         self.action_play_selected()
+
+    @on(Button.Pressed, "#info")
+    def handle_info_button(self) -> None:
+        self.action_show_info()
 
     @on(Button.Pressed, "#edit")
     def handle_edit_button(self) -> None:
@@ -1113,6 +1138,75 @@ class SeriesDetailScreen(Screen[None]):
         if isinstance(highlighted, EpisodeListItem):
             return highlighted.episode_label
         return None
+
+    def _tracker_app(self) -> MPVTrackerApp:
+        return cast("MPVTrackerApp", self.app)
+
+
+class SeriesInfoScreen(Screen[None]):
+    """Expanded MAL info screen for a linked series."""
+
+    BINDINGS: ClassVar[list[BINDING]] = [
+        ("escape", "close_screen", "Back"),
+        ("r", "refresh_info", "Refresh"),
+    ]
+
+    def __init__(self, *, slug: str, title: str, anime_info: MALAnimeInfo) -> None:
+        super().__init__()
+        self.slug = slug
+        self.title = title
+        self.anime_info = anime_info
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Vertical(id="detail-view"):
+            yield Static(f"{self.title} Info", id="detail-title")
+            yield Static("", id="series-info-status")
+            with Horizontal(id="detail-actions"):
+                yield Button("Refresh", id="refresh-series-info")
+                yield Button("Back", id="close-series-info")
+            with VerticalScroll(id="series-info-scroll"):
+                yield Static(_format_mal_info_screen(self.anime_info), id="series-info")
+        yield Footer()
+
+    def action_close_screen(self) -> None:
+        self.app.pop_screen()
+
+    def action_refresh_info(self) -> None:
+        self._refresh_info()
+
+    @on(Button.Pressed, "#refresh-series-info")
+    def handle_refresh_button(self) -> None:
+        self._refresh_info()
+
+    @on(Button.Pressed, "#close-series-info")
+    def handle_close_button(self) -> None:
+        self.app.pop_screen()
+
+    @work(thread=True, exclusive=True)
+    def _refresh_info(self) -> None:
+        app = self._tracker_app()
+        app.call_from_thread(
+            self.query_one("#series-info-status", Static).update,
+            "Refreshing MAL metadata...",
+        )
+        refreshed = app.service.refresh_series_mal_anime_info(self.slug)
+        if refreshed is None:
+            app.call_from_thread(
+                self.query_one("#series-info-status", Static).update,
+                "MAL metadata could not be refreshed.",
+            )
+            return
+        app.call_from_thread(self._apply_refreshed_info, refreshed)
+
+    def _apply_refreshed_info(self, anime_info: MALAnimeInfo) -> None:
+        self.anime_info = anime_info
+        self.query_one("#series-info", Static).update(
+            _format_mal_info_screen(anime_info),
+        )
+        self.query_one("#series-info-status", Static).update(
+            "Refreshed MAL metadata.",
+        )
 
     def _tracker_app(self) -> MPVTrackerApp:
         return cast("MPVTrackerApp", self.app)
@@ -1338,6 +1432,68 @@ def _format_mal_anime_info(info: MALAnimeInfo) -> str:
     rank = "n/a" if info.rank is None else str(info.rank)
     popularity = "n/a" if info.popularity is None else str(info.popularity)
     return f"Score: {score} | Ranked: {rank} | Popularity: {popularity}"
+
+
+def _format_mal_info_screen(info: MALAnimeInfo) -> str:
+    lines = [
+        _format_mal_anime_info(info),
+        "",
+        f"Alternative Titles: {_join_or_na(info.alternative_titles)}",
+        f"Media Type: {_value_or_na(info.media_type)}",
+        f"Status: {_value_or_na(info.status)}",
+        f"Episodes: {_int_or_na(info.num_episodes)}",
+        f"Aired: {_format_aired(info.start_date, info.end_date)}",
+        f"Source: {_value_or_na(info.source)}",
+        (
+            "Average Episode Duration: "
+            f"{_format_duration(info.average_episode_duration_seconds)}"
+        ),
+        f"Rating: {_value_or_na(info.rating)}",
+        f"Studios: {_join_or_na(info.studios)}",
+        f"Genres: {_join_or_na(info.genres)}",
+        "",
+        "Synopsis:",
+        info.synopsis or "n/a",
+        "",
+        "Background:",
+        info.background or "n/a",
+    ]
+    return "\n".join(lines)
+
+
+def _join_or_na(values: list[str] | None) -> str:
+    if not values:
+        return "n/a"
+    return ", ".join(values)
+
+
+def _value_or_na(value: str) -> str:
+    return value or "n/a"
+
+
+def _int_or_na(value: int | None) -> str:
+    if value is None:
+        return "n/a"
+    return str(value)
+
+
+def _format_aired(start_date: str, end_date: str) -> str:
+    if start_date and end_date:
+        return f"{start_date} to {end_date}"
+    if start_date:
+        return f"from {start_date}"
+    if end_date:
+        return f"until {end_date}"
+    return "n/a"
+
+
+def _format_duration(value: int | None) -> str:
+    if value is None or value <= 0:
+        return "n/a"
+    minutes, seconds = divmod(value, 60)
+    if seconds == 0:
+        return f"{minutes} min"
+    return f"{minutes} min {seconds} sec"
 
 
 def _avatar_renderable(path: Path) -> object:

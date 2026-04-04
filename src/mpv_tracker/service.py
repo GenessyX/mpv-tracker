@@ -268,6 +268,13 @@ class TrackerService:
             episodes=detailed_episodes,
         )
 
+    def refresh_series_mal_anime_info(self, slug: str) -> MALAnimeInfo | None:
+        """Force refresh cached MAL anime metadata for a linked series."""
+        entry = self.resolve_entry(slug)
+        if entry.mal_anime_id is None:
+            return None
+        return self._resolve_mal_anime_info(entry.mal_anime_id, force_refresh=True)
+
     def watch(self, slug: str, selector: str | None) -> tuple[LibraryEntry, Episode]:
         """Launch MPV and update progress while playback runs."""
         entry, episode, start_position, playlist_start = self.choose_episode(
@@ -371,7 +378,12 @@ class TrackerService:
         except MALSyncError:
             return
 
-    def _resolve_mal_anime_info(self, anime_id: int) -> MALAnimeInfo | None:
+    def _resolve_mal_anime_info(
+        self,
+        anime_id: int,
+        *,
+        force_refresh: bool = False,
+    ) -> MALAnimeInfo | None:
         settings = self.load_mal_settings()
         client_id = settings.client_id.strip()
         if not client_id:
@@ -382,6 +394,7 @@ class TrackerService:
                 client_id=client_id,
                 cache_path=self._resolve_mal_anime_cache_path(),
                 app_settings=self.load_app_settings(),
+                force_refresh=force_refresh,
             )
         except MALDataError:
             return None
