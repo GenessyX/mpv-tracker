@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from textual import on, work
@@ -9,7 +10,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, ListItem, ListView, Static
+from textual.widgets import Button, Footer, Header, Input, ListItem, ListView, Static
 
 from mpv_tracker.service import TrackerService
 
@@ -44,6 +45,7 @@ class LibraryScreen(Screen[None]):
     """First screen showing all tracked series."""
 
     BINDINGS: ClassVar[list[BINDING]] = [
+        ("a", "add_series", "Add"),
         ("enter", "open_selected", "Open"),
         ("r", "refresh", "Refresh"),
         ("q", "app.quit", "Quit"),
@@ -61,18 +63,21 @@ class LibraryScreen(Screen[None]):
         self.refresh_series()
 
     def refresh_series(self) -> None:
-        service = self._tracker_app().service
+        app = self._tracker_app()
+        service = app.service
         progress_items = service.list_progress()
         list_view = self.query_one("#series-list", ListView)
         list_view.clear()
+        status_message = app.consume_library_message()
         if not progress_items:
             self.query_one("#library-status", Static).update(
-                "No series tracked yet. Use `mpv-tracker add ...` to register one.",
+                status_message
+                or "No series tracked yet. Press `a` to add a tracked series.",
             )
             return
 
         self.query_one("#library-status", Static).update(
-            "Select a series and press Enter to view details.",
+            status_message or "Select a series and press Enter to view details.",
         )
         for item in progress_items:
             list_view.append(SeriesListItem(item))
@@ -81,6 +86,9 @@ class LibraryScreen(Screen[None]):
 
     def action_refresh(self) -> None:
         self.refresh_series()
+
+    def action_add_series(self) -> None:
+        self._tracker_app().push_screen(AddSeriesScreen())
 
     def action_open_selected(self) -> None:
         list_view = self.query_one("#series-list", ListView)
@@ -92,6 +100,89 @@ class LibraryScreen(Screen[None]):
     def handle_open_series(self, event: ListView.Selected) -> None:
         if isinstance(event.item, SeriesListItem):
             self._tracker_app().push_screen(SeriesDetailScreen(event.item.slug))
+
+    def _tracker_app(self) -> MPVTrackerApp:
+        return cast("MPVTrackerApp", self.app)
+
+
+class AddSeriesScreen(Screen[None]):
+    """Form screen for adding a tracked series."""
+
+    BINDINGS: ClassVar[list[BINDING]] = [
+        ("escape", "cancel", "Cancel"),
+        ("ctrl+s", "submit", "Save"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Vertical(id="add-series-view"):
+            yield Static("Add Series", id="detail-title")
+            yield Static(
+                "Enter a title and directory. Slug is optional.",
+                id="add-series-status",
+            )
+            yield Input(placeholder="Series title", id="add-title")
+            yield Input(placeholder="/path/to/series", id="add-directory")
+            yield Input(placeholder="optional-slug", id="add-slug")
+            with Horizontal(id="detail-actions"):
+                yield Button("Save", id="save-series", variant="primary")
+                yield Button("Cancel", id="cancel-series")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#add-title", Input).focus()
+
+    def action_cancel(self) -> None:
+        self._tracker_app().pop_screen()
+
+    def action_submit(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#save-series")
+    def handle_save_button(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#cancel-series")
+    def handle_cancel_button(self) -> None:
+        self._tracker_app().pop_screen()
+
+    @on(Input.Submitted)
+    def handle_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "add-slug":
+            self._submit()
+            return
+        self.focus_next()
+
+    def _submit(self) -> None:
+        title = self.query_one("#add-title", Input).value.strip()
+        directory = self.query_one("#add-directory", Input).value.strip()
+        slug = self.query_one("#add-slug", Input).value.strip() or None
+        if not title:
+            self._set_status("Title cannot be empty.")
+            self.query_one("#add-title", Input).focus()
+            return
+        if not directory:
+            self._set_status("Directory cannot be empty.")
+            self.query_one("#add-directory", Input).focus()
+            return
+
+        try:
+            entry = self._tracker_app().service.add_series(
+                title=title,
+                directory=Path(directory),
+                slug=slug,
+            )
+        except ValueError as error:
+            self._set_status(str(error))
+            return
+
+        app = self._tracker_app()
+        app.library_message = f"Added {entry.title} ({entry.slug})."
+        app.pop_screen()
+        app.refresh_library()
+
+    def _set_status(self, message: str) -> None:
+        self.query_one("#add-series-status", Static).update(message)
 
     def _tracker_app(self) -> MPVTrackerApp:
         return cast("MPVTrackerApp", self.app)
@@ -246,13 +337,18 @@ class MPVTrackerApp(App[None]):
         padding: 1 2;
     }
 
+    #add-series-view {
+        padding: 1 2;
+    }
+
     #title, #detail-title {
         text-style: bold;
         color: #f6bd60;
         margin-bottom: 1;
     }
 
-    #library-status, #detail-summary, #detail-directory, #playback-status {
+    #library-status, #detail-summary, #detail-directory, #playback-status,
+    #add-series-status {
         margin-bottom: 1;
     }
 
@@ -282,6 +378,10 @@ class MPVTrackerApp(App[None]):
     Button {
         margin-right: 1;
     }
+
+    Input {
+        margin-bottom: 1;
+    }
     """
 
     BINDINGS: ClassVar[list[BINDING]] = [
@@ -291,6 +391,7 @@ class MPVTrackerApp(App[None]):
     def __init__(self) -> None:
         super().__init__()
         self.service = TrackerService.create_default()
+        self.library_message: str | None = None
 
     def on_mount(self) -> None:
         self.push_screen(LibraryScreen())
@@ -304,6 +405,11 @@ class MPVTrackerApp(App[None]):
             if isinstance(stacked_screen, LibraryScreen):
                 stacked_screen.refresh_series()
                 return
+
+    def consume_library_message(self) -> str | None:
+        message = self.library_message
+        self.library_message = None
+        return message
 
 
 def _format_series_row(progress: SeriesProgress) -> str:
