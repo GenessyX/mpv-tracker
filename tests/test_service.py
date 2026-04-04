@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from mpv_tracker.config import DEFAULT_MAL_CLIENT_ID
 from mpv_tracker.library import LibraryRepository
 from mpv_tracker.mal import build_authorization, parse_anime_reference, profile_url
 from mpv_tracker.models import AppSettings, MALSettings
@@ -126,6 +127,20 @@ def test_save_and_load_mal_settings(tmp_path: Path) -> None:
     loaded = service.load_mal_settings()
 
     assert loaded == settings
+
+
+def test_load_mal_settings_uses_default_client_id_when_missing(tmp_path: Path) -> None:
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(
+        repository=repository,
+        mal_settings_path=tmp_path / "mal.json",
+    )
+
+    loaded = service.load_mal_settings()
+
+    assert loaded.client_id == DEFAULT_MAL_CLIENT_ID
+    assert loaded.access_token == ""
+    assert loaded.refresh_token == ""
 
 
 def test_profile_url_uses_username() -> None:

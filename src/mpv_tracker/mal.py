@@ -16,7 +16,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import ParseResult, parse_qs, quote, urlencode, urlparse
 from urllib.request import OpenerDirector, ProxyHandler, Request, build_opener
 
-from mpv_tracker.config import AVATAR_CACHE_DIR_NAME, default_data_dir
+from mpv_tracker.config import (
+    AVATAR_CACHE_DIR_NAME,
+    DEFAULT_MAL_CLIENT_ID,
+    default_data_dir,
+)
 from mpv_tracker.models import AppSettings, MALCurrentUser, MALSettings
 
 if TYPE_CHECKING:
@@ -56,13 +60,24 @@ class OAuthAuthorization:
 def load_settings(path: Path) -> MALSettings:
     """Load MAL settings from disk or return an empty configuration."""
     if not path.exists():
-        return MALSettings(client_id="", access_token="", refresh_token="")
+        return MALSettings(
+            client_id=DEFAULT_MAL_CLIENT_ID,
+            access_token="",
+            refresh_token="",
+        )
     with path.open(encoding="utf-8") as file:
         payload = json.load(file)
     if not isinstance(payload, dict):
-        return MALSettings(client_id="", access_token="", refresh_token="")
+        return MALSettings(
+            client_id=DEFAULT_MAL_CLIENT_ID,
+            access_token="",
+            refresh_token="",
+        )
+    client_id = _coerce_string(payload.get("client_id")).strip()
+    if not client_id:
+        client_id = DEFAULT_MAL_CLIENT_ID
     return MALSettings(
-        client_id=_coerce_string(payload.get("client_id")),
+        client_id=client_id,
         access_token=_coerce_string(payload.get("access_token")),
         refresh_token=_coerce_string(payload.get("refresh_token")),
         user_name=_coerce_string(payload.get("user_name")),

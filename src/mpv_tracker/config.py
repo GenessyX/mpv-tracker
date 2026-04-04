@@ -11,6 +11,7 @@ DB_FILE_NAME = "library.sqlite3"
 MAL_SETTINGS_FILE_NAME = "mal.json"
 APP_SETTINGS_FILE_NAME = "settings.json"
 AVATAR_CACHE_DIR_NAME = "avatars"
+DEFAULT_MAL_CLIENT_ID = "774e9161d6f70a57fbc5d4b7072d9417"
 VIDEO_EXTENSIONS = {
     ".3gp",
     ".avi",
