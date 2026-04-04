@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from mpv_tracker.library import LibraryRepository
+from mpv_tracker.mal import build_authorization, parse_anime_reference, profile_url
+from mpv_tracker.models import AppSettings, MALSettings
 from mpv_tracker.mpv_client import (
     PlaybackSnapshot,
     _apply_end_file,
@@ -67,6 +69,84 @@ def test_remove_series_removes_entry_from_library(tmp_path: Path) -> None:
 
     assert removed.slug == "frieren"
     assert service.list_progress() == []
+
+
+def test_add_series_parses_mal_anime_url(tmp_path: Path) -> None:
+    series_dir = tmp_path / "frieren"
+    series_dir.mkdir()
+
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(repository=repository)
+
+    entry = service.add_series(
+        title="Frieren",
+        directory=series_dir,
+        slug="frieren",
+        mal_anime="https://myanimelist.net/anime/52991/Sousou_no_Frieren",
+    )
+
+    assert entry.mal_anime_id == 52991
+
+
+def test_parse_anime_reference_accepts_id_or_url() -> None:
+    assert parse_anime_reference("5114") == 5114
+    assert parse_anime_reference("https://myanimelist.net/anime/5114/FMA") == 5114
+
+
+def test_build_authorization_uses_local_callback() -> None:
+    authorization = build_authorization("client-id")
+
+    assert authorization.authorization_url.startswith(
+        "https://myanimelist.net/v1/oauth2/authorize?",
+    )
+    assert "client_id=client-id" in authorization.authorization_url
+    assert "redirect_uri=http%3A%2F%2Flocalhost%3A1234%2Fcallback" in (
+        authorization.authorization_url
+    )
+    assert "code_challenge_method=plain" in authorization.authorization_url
+    assert authorization.code_verifier
+    assert authorization.state
+
+
+def test_save_and_load_mal_settings(tmp_path: Path) -> None:
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(
+        repository=repository,
+        mal_settings_path=tmp_path / "mal.json",
+    )
+    settings = MALSettings(
+        client_id="client-id",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        user_name="genesis",
+        user_picture="https://cdn.myanimelist.net/images/userimages/1.jpg",
+    )
+
+    service.save_mal_settings(settings)
+    loaded = service.load_mal_settings()
+
+    assert loaded == settings
+
+
+def test_profile_url_uses_username() -> None:
+    assert profile_url("genesis") == "https://myanimelist.net/profile/genesis"
+
+
+def test_save_and_load_app_settings(tmp_path: Path) -> None:
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(
+        repository=repository,
+        app_settings_path=tmp_path / "settings.json",
+    )
+    settings = AppSettings(
+        http_proxy="http://127.0.0.1:8080",
+        https_proxy="http://127.0.0.1:8080",
+    )
+
+    service.save_app_settings(settings)
+    loaded = service.load_app_settings()
+
+    assert loaded == settings
 
 
 def test_select_episode_prefers_resume_then_next_unwatched(tmp_path: Path) -> None:

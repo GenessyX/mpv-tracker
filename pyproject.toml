@@ -16,6 +16,7 @@ dependencies = ["cyclopts>=3.8.0", "textual>=0.79.1"]
 mpv-tracker = "mpv_tracker.cli:run"
 
 [dependency-groups]
+debug = ["textual-dev>=1.7.0"]
 local = ["prek"]
 lint = ["ruff"]
 types = ["mypy"]

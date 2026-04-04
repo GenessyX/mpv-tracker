@@ -28,22 +28,42 @@ class LibraryRepository:
                 CREATE TABLE IF NOT EXISTS library (
                     slug TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
-                    directory TEXT NOT NULL UNIQUE
+                    directory TEXT NOT NULL UNIQUE,
+                    mal_anime_id INTEGER
                 )
                 """,
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(library)").fetchall()
+            }
+            if "mal_anime_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE library ADD COLUMN mal_anime_id INTEGER",
+                )
 
     def add(self, entry: LibraryEntry) -> None:
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO library (slug, title, directory) VALUES (?, ?, ?)",
-                (entry.slug, entry.title, str(entry.directory)),
+                (
+                    "INSERT INTO library (slug, title, directory, mal_anime_id) "
+                    "VALUES (?, ?, ?, ?)"
+                ),
+                (
+                    entry.slug,
+                    entry.title,
+                    str(entry.directory),
+                    entry.mal_anime_id,
+                ),
             )
 
     def get(self, slug: str) -> LibraryEntry | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT slug, title, directory FROM library WHERE slug = ?",
+                (
+                    "SELECT slug, title, directory, mal_anime_id "
+                    "FROM library WHERE slug = ?"
+                ),
                 (slug,),
             ).fetchone()
         if row is None:
@@ -52,6 +72,7 @@ class LibraryRepository:
             slug=row["slug"],
             title=row["title"],
             directory=Path(row["directory"]),
+            mal_anime_id=row["mal_anime_id"],
         )
 
     def remove(self, slug: str) -> bool:
@@ -66,7 +87,7 @@ class LibraryRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 (
-                    "SELECT slug, title, directory FROM library "
+                    "SELECT slug, title, directory, mal_anime_id FROM library "
                     "ORDER BY title COLLATE NOCASE"
                 ),
             ).fetchall()
@@ -75,6 +96,7 @@ class LibraryRepository:
                 slug=row["slug"],
                 title=row["title"],
                 directory=Path(row["directory"]),
+                mal_anime_id=row["mal_anime_id"],
             )
             for row in rows
         ]

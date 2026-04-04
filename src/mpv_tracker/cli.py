@@ -7,10 +7,12 @@ from pathlib import Path
 
 from cyclopts import App
 
+from mpv_tracker.config import debug_mode_enabled
 from mpv_tracker.service import TrackerService
 from mpv_tracker.tui import run_tui
 
 app = App(help="Track watched episodes in local series/anime directories.")
+_DEBUG_ARG_COUNT = 2
 
 
 def _prompt(label: str) -> str:
@@ -30,6 +32,7 @@ def add(
     title: str | None = None,
     directory: Path | None = None,
     slug: str | None = None,
+    mal_anime: str | None = None,
 ) -> None:
     """Add a series directory to the tracker."""
     service = TrackerService.create_default()
@@ -41,6 +44,7 @@ def add(
         title=effective_title,
         directory=effective_directory,
         slug=suggested_slug,
+        mal_anime=mal_anime,
     )
     _write(f"Added {entry.title} as {entry.slug} -> {entry.directory}")
 
@@ -89,7 +93,15 @@ def reset(slug: str) -> None:
 
 def run() -> None:
     """Run the CLI application."""
+    if len(sys.argv) == _DEBUG_ARG_COUNT and sys.argv[1] == "--debug":
+        _write(
+            "Debug mode enables Textual devtools. "
+            "Install with `uv sync --group debug` and run `textual console` "
+            "in another terminal.",
+        )
+        run_tui(debug=True)
+        return
     if len(sys.argv) == 1:
-        run_tui()
+        run_tui(debug=debug_mode_enabled())
         return
     app()

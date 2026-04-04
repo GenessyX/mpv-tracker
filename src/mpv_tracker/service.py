@@ -8,15 +8,25 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from mpv_tracker.config import (
+    APP_SETTINGS_FILE_NAME,
     DB_FILE_NAME,
+    MAL_SETTINGS_FILE_NAME,
     RESUME_BACKTRACK_SECONDS,
     default_data_dir,
 )
 from mpv_tracker.library import LibraryRepository
+from mpv_tracker.mal import (
+    hydrate_current_user,
+    load_settings,
+    parse_anime_reference,
+    save_settings,
+)
 from mpv_tracker.models import (
+    AppSettings,
     Episode,
     EpisodeProgress,
     LibraryEntry,
+    MALSettings,
     SeriesDetail,
     SeriesProgress,
 )
@@ -30,6 +40,12 @@ from mpv_tracker.progress import (
     select_episode,
     transition_episode_progress,
     watched_count,
+)
+from mpv_tracker.settings_store import (
+    load_settings as load_app_settings_file,
+)
+from mpv_tracker.settings_store import (
+    save_settings as save_app_settings_file,
 )
 
 if TYPE_CHECKING:
@@ -47,12 +63,18 @@ class TrackerService:
     """Application service coordinating library, state, and playback."""
 
     repository: LibraryRepository
+    mal_settings_path: Path | None = None
+    app_settings_path: Path | None = None
 
     @classmethod
     def create_default(cls) -> "TrackerService":
         """Create the service using the default application data directory."""
         data_dir = default_data_dir()
-        return cls(repository=LibraryRepository(data_dir / DB_FILE_NAME))
+        return cls(
+            repository=LibraryRepository(data_dir / DB_FILE_NAME),
+            mal_settings_path=data_dir / MAL_SETTINGS_FILE_NAME,
+            app_settings_path=data_dir / APP_SETTINGS_FILE_NAME,
+        )
 
     def add_series(
         self,
@@ -60,6 +82,7 @@ class TrackerService:
         title: str,
         directory: Path,
         slug: str | None,
+        mal_anime: str | None = None,
     ) -> LibraryEntry:
         """Register a series in the global library index."""
         resolved_directory = directory.expanduser().resolve()
@@ -76,6 +99,7 @@ class TrackerService:
             slug=effective_slug,
             title=title.strip(),
             directory=resolved_directory,
+            mal_anime_id=parse_anime_reference(mal_anime),
         )
         try:
             self.repository.add(entry)
@@ -83,6 +107,33 @@ class TrackerService:
             msg = "A series with the same slug or directory already exists."
             raise ValueError(msg) from error
         return entry
+
+    def load_mal_settings(self) -> MALSettings:
+        """Load persisted MAL credentials."""
+        return load_settings(self._resolve_mal_settings_path())
+
+    def save_mal_settings(self, settings: MALSettings) -> MALSettings:
+        """Persist MAL credentials."""
+        save_settings(self._resolve_mal_settings_path(), settings)
+        return settings
+
+    def refresh_mal_current_user(self) -> MALSettings:
+        """Refresh the persisted MAL account summary from the API."""
+        settings = self.load_mal_settings()
+        updated = hydrate_current_user(
+            settings,
+            app_settings=self.load_app_settings(),
+        )
+        return self.save_mal_settings(updated)
+
+    def load_app_settings(self) -> AppSettings:
+        """Load persisted application settings."""
+        return load_app_settings_file(self._resolve_app_settings_path())
+
+    def save_app_settings(self, settings: AppSettings) -> AppSettings:
+        """Persist application settings."""
+        save_app_settings_file(self._resolve_app_settings_path(), settings)
+        return settings
 
     def list_progress(self) -> list[SeriesProgress]:
         """Summarize tracked series progress."""
@@ -220,6 +271,16 @@ class TrackerService:
             msg = f"No series found for slug {slug!r}."
             raise ValueError(msg)
         return entry
+
+    def _resolve_mal_settings_path(self) -> Path:
+        if self.mal_settings_path is not None:
+            return self.mal_settings_path
+        return default_data_dir() / MAL_SETTINGS_FILE_NAME
+
+    def _resolve_app_settings_path(self) -> Path:
+        if self.app_settings_path is not None:
+            return self.app_settings_path
+        return default_data_dir() / APP_SETTINGS_FILE_NAME
 
 
 def _resolve_start_position(state: dict[str, object], episode: Episode) -> float:

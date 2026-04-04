@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import traceback
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -13,17 +15,22 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, ListItem, ListView, Static
 
+from mpv_tracker.mal import MALAuthError, anime_url, authenticate, profile_url
+from mpv_tracker.models import AppSettings, MALSettings
 from mpv_tracker.service import TrackerService
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from mpv_tracker.models import EpisodeProgress, SeriesDetail, SeriesProgress
 
 BINDING = Binding | tuple[str, str] | tuple[str, str, str]
 
 
-def run_tui() -> None:
+def run_tui(*, debug: bool = False) -> None:
     """Launch the Textual interface."""
-    MPVTrackerApp().run()
+    with _textual_debug_features(enabled=debug):
+        MPVTrackerApp(debug=debug).run()
 
 
 class SeriesListItem(ListItem):
@@ -56,6 +63,8 @@ class LibraryScreen(Screen[None]):
     BINDINGS: ClassVar[list[BINDING]] = [
         ("a", "add_series", "Add"),
         ("d", "remove_series", "Remove"),
+        ("m", "mal_login", "MAL"),
+        ("s", "settings", "Settings"),
         ("enter", "open_selected", "Open"),
         ("r", "refresh", "Refresh"),
         ("q", "app.quit", "Quit"),
@@ -100,6 +109,12 @@ class LibraryScreen(Screen[None]):
     def action_add_series(self) -> None:
         self._tracker_app().push_screen(AddSeriesScreen())
 
+    def action_mal_login(self) -> None:
+        self._tracker_app().push_screen(MALSettingsScreen())
+
+    def action_settings(self) -> None:
+        self._tracker_app().push_screen(AppSettingsScreen())
+
     def action_remove_series(self) -> None:
         list_view = self.query_one("#series-list", ListView)
         highlighted = list_view.highlighted_child
@@ -139,8 +154,8 @@ class AddSeriesScreen(Screen[None]):
             yield Static("Add Series", id="detail-title")
             yield Static(
                 (
-                    "Enter a title and directory. Slug is optional. "
-                    "Directory matches appear below as you type."
+                    "Enter a title and directory. Slug and MAL anime reference "
+                    "are optional. Directory matches appear below as you type."
                 ),
                 id="add-series-status",
             )
@@ -148,6 +163,10 @@ class AddSeriesScreen(Screen[None]):
             yield Input(placeholder="/path/to/series", id="add-directory")
             yield ListView(id="directory-matches")
             yield Input(placeholder="optional-slug", id="add-slug")
+            yield Input(
+                placeholder="MAL anime ID or https://myanimelist.net/anime/...",
+                id="add-mal-anime",
+            )
             with Horizontal(id="detail-actions"):
                 yield Button("Save", id="save-series", variant="primary")
                 yield Button("Cancel", id="cancel-series")
@@ -186,7 +205,7 @@ class AddSeriesScreen(Screen[None]):
             and self._apply_highlighted_directory_match()
         ):
             return
-        if event.input.id == "add-slug":
+        if event.input.id == "add-mal-anime":
             self._submit()
             return
         self.focus_next()
@@ -204,6 +223,7 @@ class AddSeriesScreen(Screen[None]):
         title = self.query_one("#add-title", Input).value.strip()
         directory = self.query_one("#add-directory", Input).value.strip()
         slug = self.query_one("#add-slug", Input).value.strip() or None
+        mal_anime = self.query_one("#add-mal-anime", Input).value.strip() or None
         if not title:
             self._set_status("Title cannot be empty.")
             self.query_one("#add-title", Input).focus()
@@ -218,6 +238,7 @@ class AddSeriesScreen(Screen[None]):
                 title=title,
                 directory=Path(directory),
                 slug=slug,
+                mal_anime=mal_anime,
             )
         except ValueError as error:
             self._set_status(str(error))
@@ -283,6 +304,267 @@ class AddSeriesScreen(Screen[None]):
         matches_view = self.query_one("#directory-matches", ListView)
         if matches_view.children:
             matches_view.focus()
+
+    def _tracker_app(self) -> MPVTrackerApp:
+        return cast("MPVTrackerApp", self.app)
+
+
+class MALSettingsScreen(Screen[None]):
+    """Screen for entering MyAnimeList API credentials."""
+
+    BINDINGS: ClassVar[list[BINDING]] = [
+        ("escape", "cancel", "Cancel"),
+        ("ctrl+s", "submit", "Save"),
+        ("r", "refresh_profile", "Refresh"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Vertical(id="mal-settings-view"):
+            yield Static("MyAnimeList Login", id="detail-title")
+            yield Static(
+                (
+                    "Set your MAL client ID, then authenticate in the browser. "
+                    "The callback is currently fixed to http://localhost:1234/callback."
+                ),
+                id="mal-settings-status",
+            )
+            yield Input(placeholder="MAL client ID", id="mal-client-id")
+            yield Static("", id="mal-token-status")
+            yield Static("", id="mal-account-status")
+            with Horizontal(id="detail-actions"):
+                yield Button("Save Client ID", id="save-mal-client", variant="primary")
+                yield Button("Authenticate", id="authenticate-mal")
+                yield Button("Refresh Profile", id="refresh-mal-profile")
+                yield Button("Cancel", id="cancel-mal")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        settings = self._tracker_app().service.load_mal_settings()
+        self.query_one("#mal-client-id", Input).value = settings.client_id
+        self.query_one("#mal-client-id", Input).focus()
+        self._update_account_status()
+
+    def action_cancel(self) -> None:
+        self._tracker_app().pop_screen()
+
+    def action_submit(self) -> None:
+        self._save_client_id()
+
+    def action_refresh_profile(self) -> None:
+        self._refresh_profile()
+
+    @on(Button.Pressed, "#save-mal-client")
+    def handle_save_button(self) -> None:
+        self._save_client_id()
+
+    @on(Button.Pressed, "#authenticate-mal")
+    def handle_authenticate_button(self) -> None:
+        self._authenticate()
+
+    @on(Button.Pressed, "#refresh-mal-profile")
+    def handle_refresh_profile_button(self) -> None:
+        self._refresh_profile()
+
+    @on(Button.Pressed, "#cancel-mal")
+    def handle_cancel_button(self) -> None:
+        self._tracker_app().pop_screen()
+
+    @on(Input.Submitted)
+    def handle_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "mal-client-id":
+            self._save_client_id()
+            return
+        self.focus_next()
+
+    def _save_client_id(self) -> None:
+        settings = self._tracker_app().service.load_mal_settings()
+        client_id = self.query_one("#mal-client-id", Input).value.strip()
+        if not client_id:
+            self._set_status("MAL client ID cannot be empty.")
+            self.query_one("#mal-client-id", Input).focus()
+            return
+
+        self._tracker_app().service.save_mal_settings(
+            MALSettings(
+                client_id=client_id,
+                access_token=settings.access_token,
+                refresh_token=settings.refresh_token,
+                user_name=settings.user_name,
+                user_picture=settings.user_picture,
+            ),
+        )
+        self._set_status("Saved MAL client ID.")
+        self._update_account_status()
+
+    @work(thread=True, exclusive=True)
+    def _authenticate(self) -> None:
+        client_id = self.query_one("#mal-client-id", Input).value.strip()
+        if not client_id:
+            self._tracker_app().call_from_thread(
+                self._set_status,
+                "MAL client ID cannot be empty.",
+            )
+            return
+        self._tracker_app().call_from_thread(
+            self._set_status,
+            "Opening MAL authentication in the browser...",
+        )
+        existing_settings = self._tracker_app().service.load_mal_settings()
+        app_settings = self._tracker_app().service.load_app_settings()
+        self._tracker_app().service.save_mal_settings(
+            MALSettings(
+                client_id=client_id,
+                access_token=existing_settings.access_token,
+                refresh_token=existing_settings.refresh_token,
+                user_name=existing_settings.user_name,
+                user_picture=existing_settings.user_picture,
+            ),
+        )
+        try:
+            updated_settings = authenticate(
+                client_id,
+                app_settings=app_settings,
+            )
+        except MALAuthError as error:
+            self._tracker_app().report_exception(error)
+            self._tracker_app().call_from_thread(self._set_status, str(error))
+            return
+        self._tracker_app().service.save_mal_settings(updated_settings)
+        self._tracker_app().call_from_thread(
+            self._complete_authentication,
+            updated_settings,
+        )
+
+    @work(thread=True, exclusive=True)
+    def _refresh_profile(self) -> None:
+        settings = self._tracker_app().service.load_mal_settings()
+        if not settings.access_token:
+            self._tracker_app().call_from_thread(
+                self._set_status,
+                "Authenticate with MyAnimeList first.",
+            )
+            return
+
+        self._tracker_app().call_from_thread(
+            self._set_status,
+            "Refreshing MyAnimeList account details...",
+        )
+        try:
+            updated_settings = self._tracker_app().service.refresh_mal_current_user()
+        except MALAuthError as error:
+            self._tracker_app().report_exception(error)
+            self._tracker_app().call_from_thread(self._set_status, str(error))
+            return
+        self._tracker_app().call_from_thread(
+            self._complete_profile_refresh,
+            updated_settings,
+        )
+
+    def _set_status(self, message: str) -> None:
+        self.query_one("#mal-settings-status", Static).update(message)
+
+    def _update_account_status(self) -> None:
+        settings = self._tracker_app().service.load_mal_settings()
+        self.query_one("#mal-token-status", Static).update(_mal_login_status(settings))
+        self.query_one("#mal-account-status", Static).update(
+            _mal_account_status(settings),
+        )
+
+    def _complete_authentication(self, settings: MALSettings) -> None:
+        self.query_one("#mal-client-id", Input).value = settings.client_id
+        self._update_account_status()
+        app = self._tracker_app()
+        message = "Authenticated with MyAnimeList."
+        if settings.user_name:
+            message = f"Authenticated with MyAnimeList as {settings.user_name}."
+        app.library_message = message
+        self._set_status("MAL authentication completed successfully.")
+        app.pop_screen()
+        app.refresh_library()
+
+    def _complete_profile_refresh(self, settings: MALSettings) -> None:
+        self.query_one("#mal-client-id", Input).value = settings.client_id
+        self._update_account_status()
+        self._set_status("Refreshed MyAnimeList account details.")
+
+    def _tracker_app(self) -> MPVTrackerApp:
+        return cast("MPVTrackerApp", self.app)
+
+
+class AppSettingsScreen(Screen[None]):
+    """Screen for application-level settings such as proxies."""
+
+    BINDINGS: ClassVar[list[BINDING]] = [
+        ("escape", "cancel", "Cancel"),
+        ("ctrl+s", "submit", "Save"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Vertical(id="app-settings-view"):
+            yield Static("Settings", id="detail-title")
+            yield Static(
+                "General application settings.",
+                id="app-settings-status",
+            )
+            yield Static("Proxy", id="settings-section-title")
+            yield Static(
+                "HTTP proxy is used for plain HTTP requests. "
+                "HTTPS proxy is used for HTTPS requests.",
+                id="settings-section-help",
+            )
+            yield Input(
+                placeholder="HTTP proxy URL, for example http://127.0.0.1:8080",
+                id="http-proxy",
+            )
+            yield Input(
+                placeholder="HTTPS proxy URL, for example http://127.0.0.1:8080",
+                id="https-proxy",
+            )
+            with Horizontal(id="detail-actions"):
+                yield Button("Save", id="save-app-settings", variant="primary")
+                yield Button("Cancel", id="cancel-app-settings")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        settings = self._tracker_app().service.load_app_settings()
+        self.query_one("#http-proxy", Input).value = settings.http_proxy
+        self.query_one("#https-proxy", Input).value = settings.https_proxy
+        self.query_one("#http-proxy", Input).focus()
+
+    def action_cancel(self) -> None:
+        self._tracker_app().pop_screen()
+
+    def action_submit(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#save-app-settings")
+    def handle_save_button(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#cancel-app-settings")
+    def handle_cancel_button(self) -> None:
+        self._tracker_app().pop_screen()
+
+    @on(Input.Submitted)
+    def handle_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "https-proxy":
+            self._submit()
+            return
+        self.focus_next()
+
+    def _submit(self) -> None:
+        settings = AppSettings(
+            http_proxy=self.query_one("#http-proxy", Input).value.strip(),
+            https_proxy=self.query_one("#https-proxy", Input).value.strip(),
+        )
+        self._tracker_app().service.save_app_settings(settings)
+        app = self._tracker_app()
+        app.library_message = "Saved application settings."
+        self.query_one("#app-settings-status", Static).update("Saved settings.")
+        app.pop_screen()
+        app.refresh_library()
 
     def _tracker_app(self) -> MPVTrackerApp:
         return cast("MPVTrackerApp", self.app)
@@ -397,6 +679,7 @@ class SeriesDetailScreen(Screen[None]):
             yield Static("", id="detail-title")
             yield Static("", id="detail-summary")
             yield Static("", id="detail-directory")
+            yield Static("", id="detail-mal")
             yield Static("", id="playback-status")
             with Horizontal(id="detail-actions"):
                 yield Button("Play", id="play", variant="primary")
@@ -414,6 +697,13 @@ class SeriesDetailScreen(Screen[None]):
         self.query_one("#detail-title", Static).update(detail.entry.title)
         self.query_one("#detail-summary", Static).update(_format_detail_summary(detail))
         self.query_one("#detail-directory", Static).update(str(detail.entry.directory))
+        mal_text = "MAL: not linked"
+        if detail.entry.mal_anime_id is not None:
+            mal_text = (
+                f"MAL: {detail.entry.mal_anime_id} "
+                f"({anime_url(detail.entry.mal_anime_id)})"
+            )
+        self.query_one("#detail-mal", Static).update(mal_text)
         playback_status = (
             "Choose an episode and press Play. Enter on a row also starts playback."
         )
@@ -510,6 +800,7 @@ class SeriesDetailScreen(Screen[None]):
         try:
             app.service.watch(self.slug, selector)
         except Exception as error:  # noqa: BLE001
+            app.report_exception(error)
             app.call_from_thread(self._handle_playback_error, str(error))
             return
         app.call_from_thread(self._handle_playback_complete)
@@ -555,7 +846,7 @@ class MPVTrackerApp(App[None]):
         padding: 1 2;
     }
 
-    #add-series-view, #confirm-remove-view {
+    #add-series-view, #confirm-remove-view, #mal-settings-view, #app-settings-view {
         padding: 1 2;
     }
 
@@ -565,12 +856,23 @@ class MPVTrackerApp(App[None]):
         margin-bottom: 1;
     }
 
-    #library-status, #detail-summary, #detail-directory, #playback-status,
-    #add-series-status, #confirm-remove-message, #confirm-remove-status {
+    #library-status, #detail-summary, #detail-directory, #detail-mal,
+    #playback-status, #add-series-status, #confirm-remove-message,
+    #confirm-remove-status, #mal-settings-status, #app-settings-status,
+    #settings-section-title, #settings-section-help {
         margin-bottom: 1;
     }
 
-    #detail-directory {
+    #settings-section-title {
+        text-style: bold;
+        color: #f6bd60;
+    }
+
+    #settings-section-help {
+        color: #9fb3c8;
+    }
+
+    #detail-directory, #detail-mal {
         color: #9fb3c8;
     }
 
@@ -618,10 +920,11 @@ class MPVTrackerApp(App[None]):
         ("ctrl+c", "quit", "Quit"),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, *, debug: bool = False) -> None:
         super().__init__()
         self.service = TrackerService.create_default()
         self.library_message: str | None = None
+        self.debug_mode = debug
 
     def on_mount(self) -> None:
         self.push_screen(LibraryScreen())
@@ -640,6 +943,10 @@ class MPVTrackerApp(App[None]):
         message = self.library_message
         self.library_message = None
         return message
+
+    def report_exception(self, error: BaseException) -> None:
+        if self.debug_mode:
+            traceback.print_exception(error, file=self.error_console.file)
 
 
 def _format_series_row(progress: SeriesProgress) -> str:
@@ -700,6 +1007,51 @@ def _format_seconds(value: float) -> str:
     if hours > 0:
         return f"{hours:d}:{minutes:02d}:{seconds:02d}"
     return f"{minutes:d}:{seconds:02d}"
+
+
+def _mal_login_status(settings: MALSettings) -> str:
+    if settings.access_token:
+        return "MyAnimeList login is saved."
+    return "No MyAnimeList login saved."
+
+
+def _mal_account_status(settings: MALSettings) -> str:
+    if not settings.access_token:
+        return "Account: not authenticated."
+
+    lines = ["Account: authenticated."]
+    if settings.user_name:
+        lines.append(f"User: {settings.user_name}")
+        profile = profile_url(settings.user_name)
+        if profile is not None:
+            lines.append(f"Profile: {profile}")
+    else:
+        lines.append("User: not loaded yet. Press Refresh to fetch account details.")
+
+    if settings.user_picture:
+        lines.append(f"Avatar: {settings.user_picture}")
+    return "\n".join(lines)
+
+
+@contextmanager
+def _textual_debug_features(*, enabled: bool) -> Iterator[None]:
+    previous = os.environ.get("TEXTUAL")
+    if enabled:
+        features = (
+            {feature.strip() for feature in previous.split(",")} if previous else set()
+        )
+        features.update({"debug", "devtools"})
+        os.environ["TEXTUAL"] = ",".join(
+            sorted(feature for feature in features if feature),
+        )
+    try:
+        yield
+    finally:
+        if enabled:
+            if previous is None:
+                os.environ.pop("TEXTUAL", None)
+            else:
+                os.environ["TEXTUAL"] = previous
 
 
 def _find_directory_matches(value: str) -> list[Path]:

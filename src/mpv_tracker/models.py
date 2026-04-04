@@ -16,6 +16,34 @@ class LibraryEntry:
     slug: str
     title: str
     directory: Path
+    mal_anime_id: int | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class MALSettings:
+    """Persisted MyAnimeList credentials and tokens."""
+
+    client_id: str
+    access_token: str = ""
+    refresh_token: str = ""
+    user_name: str = ""
+    user_picture: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class MALCurrentUser:
+    """Authenticated MyAnimeList account summary."""
+
+    name: str
+    picture: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class AppSettings:
+    """Persisted application-level network settings."""
+
+    http_proxy: str = ""
+    https_proxy: str = ""
 
 
 @dataclass(slots=True, frozen=True)
