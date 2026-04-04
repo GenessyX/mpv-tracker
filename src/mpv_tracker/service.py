@@ -16,10 +16,12 @@ from mpv_tracker.config import (
 )
 from mpv_tracker.library import LibraryRepository
 from mpv_tracker.mal import (
+    MALSyncError,
     hydrate_current_user,
     load_settings,
     parse_anime_reference,
     save_settings,
+    update_anime_progress,
 )
 from mpv_tracker.models import (
     AppSettings,
@@ -292,6 +294,7 @@ class TrackerService:
             on_update=persist_snapshot,
         )
         persist_snapshot(snapshot)
+        self._sync_series_progress_to_mal(entry)
         return entry, episode
 
     def reset_progress(self, slug: str) -> LibraryEntry:
@@ -309,6 +312,11 @@ class TrackerService:
             raise ValueError(msg)
         return entry
 
+    def sync_series_progress_to_mal(self, slug: str) -> None:
+        """Synchronize watched episode count to MAL for a linked series."""
+        entry = self.resolve_entry(slug)
+        self._sync_series_progress_to_mal(entry)
+
     def _resolve_mal_settings_path(self) -> Path:
         if self.mal_settings_path is not None:
             return self.mal_settings_path
@@ -318,6 +326,35 @@ class TrackerService:
         if self.app_settings_path is not None:
             return self.app_settings_path
         return default_data_dir() / APP_SETTINGS_FILE_NAME
+
+    def _sync_series_progress_to_mal(self, entry: LibraryEntry) -> None:
+        if entry.mal_anime_id is None:
+            return
+
+        settings = self.load_mal_settings()
+        if not settings.access_token:
+            return
+
+        episodes = discover_episodes(entry.directory)
+        if not episodes:
+            return
+
+        state = load_state(entry.directory)
+        watched_episodes = watched_count(state, episodes)
+        if watched_episodes <= 0:
+            return
+
+        status = "completed" if watched_episodes >= len(episodes) else "watching"
+        try:
+            update_anime_progress(
+                anime_id=entry.mal_anime_id,
+                access_token=settings.access_token,
+                num_watched_episodes=watched_episodes,
+                status=status,
+                app_settings=self.load_app_settings(),
+            )
+        except MALSyncError:
+            return
 
 
 def _resolve_start_position(state: dict[str, object], episode: Episode) -> float:

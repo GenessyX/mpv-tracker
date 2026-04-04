@@ -30,6 +30,9 @@ _MAL_ANIME_PATH = re.compile(r"^/anime/(?P<anime_id>\d+)(?:/|$)")
 _AUTH_URL = "https://myanimelist.net/v1/oauth2/authorize"
 _OAUTH_TOKEN_ENDPOINT = "https://myanimelist.net/v1/oauth2/token"  # noqa: S105
 _CURRENT_USER_ENDPOINT = "https://api.myanimelist.net/v2/users/@me?fields=picture"
+_MY_LIST_STATUS_ENDPOINT_TEMPLATE = (
+    "https://api.myanimelist.net/v2/anime/{anime_id}/my_list_status"
+)
 _DEFAULT_REDIRECT_URI = "http://localhost:1234/callback"
 _TOKEN_EXCHANGE_ATTEMPTS = 3
 _TOKEN_EXCHANGE_BACKOFF_SECONDS = 1.0
@@ -46,6 +49,10 @@ _CALLBACK_SUCCESS_HTML = """
 
 class MALAuthError(RuntimeError):
     """Raised when MAL OAuth authentication fails."""
+
+
+class MALSyncError(RuntimeError):
+    """Raised when MAL list synchronization fails."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -379,6 +386,47 @@ def cache_avatar(
 
     cache_path.write_bytes(payload)
     return cache_path
+
+
+def update_anime_progress(
+    *,
+    anime_id: int,
+    access_token: str,
+    num_watched_episodes: int,
+    status: str | None = None,
+    app_settings: AppSettings | None = None,
+) -> None:
+    """Update an anime entry in the authenticated user's MAL list."""
+    payload_data: dict[str, str | int] = {
+        "num_watched_episodes": num_watched_episodes,
+    }
+    if status:
+        payload_data["status"] = status
+    payload = urlencode(payload_data).encode("utf-8")
+    request = Request(  # noqa: S310
+        _MY_LIST_STATUS_ENDPOINT_TEMPLATE.format(anime_id=anime_id),
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "User-Agent": "mpv-tracker/0.1.0",
+        },
+        method="PUT",
+    )
+    opener = _build_url_opener(app_settings)
+    try:
+        with opener.open(request, timeout=30):
+            return
+    except HTTPError as error:
+        response_body = _read_http_error_body(error)
+        msg = f"Failed to sync MyAnimeList progress: HTTP {error.code} {error.reason}"
+        if response_body:
+            msg = f"{msg} | response={response_body}"
+        raise MALSyncError(msg) from error
+    except (URLError, OSError) as error:
+        msg = f"Failed to sync MyAnimeList progress: {error}"
+        raise MALSyncError(msg) from error
 
 
 def _coerce_string(value: object) -> str:

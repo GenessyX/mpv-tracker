@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import mpv_tracker.service as service_module
 from mpv_tracker.config import DEFAULT_MAL_CLIENT_ID
 from mpv_tracker.library import LibraryRepository
 from mpv_tracker.mal import build_authorization, parse_anime_reference, profile_url
@@ -30,6 +31,8 @@ from mpv_tracker.service import TrackerService, _merge_previous_snapshot, slugif
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
+
+    import pytest
 
     from mpv_tracker.models import Episode
 
@@ -92,6 +95,77 @@ def test_update_series_updates_title_slug_and_mal_anime(tmp_path: Path) -> None:
     assert updated.slug == "sousou-no-frieren"
     assert updated.mal_anime_id == 52991
     assert service.resolve_entry("sousou-no-frieren") == updated
+
+
+def test_sync_series_progress_to_mal_updates_watched_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    series_dir = tmp_path / "frieren"
+    series_dir.mkdir()
+    (series_dir / "01.mkv").write_text("")
+    (series_dir / "02.mkv").write_text("")
+
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(
+        repository=repository,
+        mal_settings_path=tmp_path / "mal.json",
+        app_settings_path=tmp_path / "settings.json",
+    )
+    service.add_series(
+        title="Frieren",
+        directory=series_dir,
+        slug="frieren",
+        mal_anime="52991",
+    )
+    service.save_mal_settings(
+        MALSettings(
+            client_id="client-id",
+            access_token="access-token",
+            refresh_token="refresh-token",
+        ),
+    )
+    save_state(
+        series_dir,
+        {
+            "episodes": {
+                "01.mkv": {"watched": True},
+                "02.mkv": {"watched": False},
+            },
+        },
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_update_anime_progress(
+        *,
+        anime_id: int,
+        access_token: str,
+        num_watched_episodes: int,
+        status: str | None = None,
+        app_settings: AppSettings | None = None,
+    ) -> None:
+        captured["anime_id"] = anime_id
+        captured["access_token"] = access_token
+        captured["num_watched_episodes"] = num_watched_episodes
+        captured["status"] = status
+        captured["app_settings"] = app_settings
+
+    monkeypatch.setattr(
+        service_module,
+        "update_anime_progress",
+        fake_update_anime_progress,
+    )
+
+    service.sync_series_progress_to_mal("frieren")
+
+    assert captured == {
+        "anime_id": 52991,
+        "access_token": "access-token",
+        "num_watched_episodes": 1,
+        "status": "watching",
+        "app_settings": AppSettings(),
+    }
 
 
 def test_add_series_parses_mal_anime_url(tmp_path: Path) -> None:
