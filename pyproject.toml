@@ -4,13 +4,17 @@ build-backend = "uv_build"
 
 [project]
 name = "mpv-tracker"
-version = "1.0.0"
-description = "CLI tools that allows to track episodes in a directory"
+version = "1.0.1"
+description = "TUI app for tracking episodes in local series directories"
 readme = "README.md"
 requires-python = ">= 3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "GenessyX", email = "haritonovgleb123@gmail.com" }]
 dependencies = ["cyclopts>=3.8.0", "rich-pixels>=3.0.1", "textual>=0.79.1"]
+
+[project.urls]
+Homepage = "https://github.com/GenessyX/mpv-tracker"
+Repository = "https://github.com/GenessyX/mpv-tracker"
 
 [project.scripts]
 mpv-tracker = "mpv_tracker.cli:run"

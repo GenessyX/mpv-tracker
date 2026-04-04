@@ -6,6 +6,49 @@ directories.
 It keeps a global library index in SQLite and writes per-series playback state
 inside the tracked directory itself in `.mpv-tracker.json`.
 
+## Links
+
+- PyPI: https://pypi.org/project/mpv-tracker/
+- Project metadata: [pyproject.toml](pyproject.toml)
+- README: [README.md](README.md)
+
+## Installation
+
+Python 3.12 or newer is required.
+
+### Run Without Installing Globally
+
+Use `uvx` to run the latest published version directly:
+
+```bash
+uvx mpv-tracker
+```
+
+### Install With pipx
+
+`pipx` is a good fit if you want an isolated global command:
+
+```bash
+pipx install mpv-tracker
+mpv-tracker
+```
+
+### Install With pip
+
+If you prefer plain `pip`, install the package into your current environment:
+
+```bash
+pip install mpv-tracker
+mpv-tracker
+```
+
+If you want a user-local install without `pipx`, you can also use:
+
+```bash
+python -m pip install --user mpv-tracker
+mpv-tracker
+```
+
 ## TUI
 
 Run `mpv-tracker` with no arguments to open the Textual interface.
