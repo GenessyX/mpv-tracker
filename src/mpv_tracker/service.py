@@ -9,7 +9,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from mpv_tracker.activity_store import append_recent_activity, load_recent_activity
+from mpv_tracker.animefiller import (
+    AnimeFillerDataError,
+    normalize_animefiller_url,
+    resolve_series_filler_episodes,
+)
 from mpv_tracker.config import (
+    ANIME_FILLER_CACHE_TTL_SECONDS,
     APP_SETTINGS_FILE_NAME,
     DB_FILE_NAME,
     MAL_ANIME_CACHE_FILE_NAME,
@@ -122,6 +128,10 @@ class TrackerService:
             start_chapter_index=_parse_start_chapter(start_chapter),
             preferred_audio_track_id=None,
             preferred_subtitle_track_id=None,
+            animefiller_url="",
+            filler_episode_numbers=(),
+            filler_updated_at=0,
+            skip_fillers=False,
         )
         try:
             self.repository.add(entry)
@@ -159,6 +169,10 @@ class TrackerService:
             start_chapter_index=existing_entry.start_chapter_index,
             preferred_audio_track_id=existing_entry.preferred_audio_track_id,
             preferred_subtitle_track_id=existing_entry.preferred_subtitle_track_id,
+            animefiller_url=existing_entry.animefiller_url,
+            filler_episode_numbers=existing_entry.filler_episode_numbers,
+            filler_updated_at=existing_entry.filler_updated_at,
+            skip_fillers=existing_entry.skip_fillers,
             added_at=existing_entry.added_at,
         )
         try:
@@ -304,6 +318,7 @@ class TrackerService:
             selector,
         )
         state = load_state(entry.directory)
+        filler_episode_names = _resolve_filler_episode_names(entry)
         watcher = MPVWatcher(
             entry.directory,
             episode_name=episode.label,
@@ -312,6 +327,7 @@ class TrackerService:
             preferred_start_chapter_index=entry.start_chapter_index,
             preferred_audio_track_id=entry.preferred_audio_track_id,
             preferred_subtitle_track_id=entry.preferred_subtitle_track_id,
+            filler_episode_names=filler_episode_names,
         )
         previous_snapshot: tuple[str, float, float | None, bool] | None = None
 
@@ -360,16 +376,39 @@ class TrackerService:
         entry = self.resolve_entry(slug)
         self._sync_series_progress_to_mal(entry)
 
-    def update_series_preferences(
+    def update_series_preferences(  # noqa: PLR0913
         self,
         slug: str,
         *,
         start_chapter: int | None,
         preferred_audio_track_id: int | None = None,
         preferred_subtitle_track_id: int | None = None,
+        animefiller_url: str | None = None,
+        skip_fillers: bool = False,
     ) -> LibraryEntry:
         """Update per-series preferences."""
         entry = self.resolve_entry(slug)
+        normalized_filler_url = normalize_animefiller_url(animefiller_url)
+        filler_episode_numbers = entry.filler_episode_numbers
+        filler_updated_at = entry.filler_updated_at
+        if normalized_filler_url:
+            if (
+                normalized_filler_url != entry.animefiller_url
+                or not filler_episode_numbers
+                or _animefiller_cache_stale(filler_updated_at)
+            ):
+                try:
+                    filler_episode_numbers = resolve_series_filler_episodes(
+                        normalized_filler_url,
+                        app_settings=self.load_app_settings(),
+                    )
+                except AnimeFillerDataError as error:
+                    raise ValueError(str(error)) from error
+                filler_updated_at = int(time.time())
+        else:
+            filler_episode_numbers = ()
+            filler_updated_at = 0
+            skip_fillers = False
         updated = LibraryEntry(
             slug=entry.slug,
             title=entry.title,
@@ -378,6 +417,10 @@ class TrackerService:
             start_chapter_index=_parse_start_chapter(start_chapter),
             preferred_audio_track_id=preferred_audio_track_id,
             preferred_subtitle_track_id=preferred_subtitle_track_id,
+            animefiller_url=normalized_filler_url,
+            filler_episode_numbers=filler_episode_numbers,
+            filler_updated_at=filler_updated_at,
+            skip_fillers=skip_fillers,
             added_at=entry.added_at,
         )
         self.repository.update(slug, updated)
@@ -568,3 +611,17 @@ def _parse_start_chapter(value: int | None) -> int | None:
         msg = "Start chapter must be a positive integer."
         raise ValueError(msg)
     return value - 1
+
+
+def _animefiller_cache_stale(updated_at: int) -> bool:
+    if updated_at <= 0:
+        return True
+    return (time.time() - updated_at) >= ANIME_FILLER_CACHE_TTL_SECONDS
+
+
+def _resolve_filler_episode_names(entry: LibraryEntry) -> set[str]:
+    if not entry.skip_fillers or not entry.filler_episode_numbers:
+        return set()
+    episodes = discover_episodes(entry.directory)
+    filler_numbers = set(entry.filler_episode_numbers)
+    return {episode.label for episode in episodes if episode.index in filler_numbers}

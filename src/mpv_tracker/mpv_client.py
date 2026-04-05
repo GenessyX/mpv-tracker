@@ -57,6 +57,7 @@ class MPVWatcher:
         preferred_start_chapter_index: int | None = None,
         preferred_audio_track_id: int | None = None,
         preferred_subtitle_track_id: int | None = None,
+        filler_episode_names: set[str] | None = None,
     ) -> None:
         self._media_directory = media_directory
         self._episode_name = episode_name
@@ -65,9 +66,11 @@ class MPVWatcher:
         self._preferred_start_chapter_index = preferred_start_chapter_index
         self._preferred_audio_track_id = preferred_audio_track_id
         self._preferred_subtitle_track_id = preferred_subtitle_track_id
+        self._filler_episode_names = filler_episode_names or set()
         self._initial_seek_applied = start_position_seconds <= 0
         self._chapter_seek_episode_name: str | None = None
         self._track_selection_episode_name: str | None = None
+        self._skipped_filler_episode_names: set[str] = set()
 
     def watch(
         self,
@@ -253,41 +256,61 @@ class MPVWatcher:
         latest: PlaybackSnapshot,
         on_update: Callable[[PlaybackSnapshot], None] | None,
     ) -> PlaybackSnapshot:
-        updated = self._handle_message(observed, message)
-        if updated is not None:
-            latest = updated
-            if on_update is not None:
-                on_update(latest)
+        latest = self._apply_optional_snapshot(
+            latest,
+            self._handle_message(observed, message),
+            on_update,
+        )
+        latest = self._apply_optional_snapshot(
+            latest,
+            self._maybe_apply_initial_seek(client, observed, message),
+            on_update,
+        )
+        latest = self._apply_optional_snapshot(
+            latest,
+            self._maybe_apply_preferred_start_chapter(client, observed, message),
+            on_update,
+        )
+        latest = self._apply_optional_snapshot(
+            latest,
+            self._maybe_apply_preferred_tracks(client, observed, message),
+            on_update,
+        )
+        return self._apply_optional_snapshot(
+            latest,
+            self._maybe_skip_filler_episode(client, observed, message),
+            on_update,
+        )
 
-        seek_snapshot = self._maybe_apply_initial_seek(
-            client,
-            observed,
-            message,
-        )
-        if seek_snapshot is not None:
-            latest = seek_snapshot
-            if on_update is not None:
-                on_update(latest)
+    def _apply_optional_snapshot(
+        self,
+        latest: PlaybackSnapshot,
+        candidate: PlaybackSnapshot | None,
+        on_update: Callable[[PlaybackSnapshot], None] | None,
+    ) -> PlaybackSnapshot:
+        if candidate is None:
+            return latest
+        if on_update is not None:
+            on_update(candidate)
+        return candidate
 
-        chapter_snapshot = self._maybe_apply_preferred_start_chapter(
-            client,
-            observed,
-            message,
-        )
-        if chapter_snapshot is not None:
-            latest = chapter_snapshot
-            if on_update is not None:
-                on_update(latest)
-        track_snapshot = self._maybe_apply_preferred_tracks(
-            client,
-            observed,
-            message,
-        )
-        if track_snapshot is not None:
-            latest = track_snapshot
-            if on_update is not None:
-                on_update(latest)
-        return latest
+    def _maybe_skip_filler_episode(
+        self,
+        client: socket.socket,
+        observed: _ObservedPlaybackState,
+        message: dict[str, object],
+    ) -> PlaybackSnapshot | None:
+        if not self._filler_episode_names:
+            return None
+        if message.get("event") != "property-change" or message.get("name") != "path":
+            return None
+        if observed.episode_name not in self._filler_episode_names:
+            return None
+        if observed.episode_name in self._skipped_filler_episode_names:
+            return None
+        self._send_command(client, ["playlist-next", "force"])
+        self._skipped_filler_episode_names.add(observed.episode_name)
+        return _snapshot_from_observed_state(observed)
 
     def _maybe_apply_preferred_tracks(
         self,

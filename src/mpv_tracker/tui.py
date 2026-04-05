@@ -40,6 +40,7 @@ from mpv_tracker.mal import (
     profile_url,
 )
 from mpv_tracker.models import AppSettings, MALAnimeInfo, MALSettings, MediaTrackOption
+from mpv_tracker.progress import discover_episodes
 from mpv_tracker.service import TrackerService
 
 if TYPE_CHECKING:
@@ -1529,34 +1530,58 @@ class SeriesPreferencesScreen(Screen[None]):
         self.slug = slug
         self._audio_choice_by_id: dict[str, int | None] = {}
         self._subtitle_choice_by_id: dict[str, int | None] = {}
+        self._show_filler_details = False
+        self._entry: LibraryEntry | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="app-settings-view"):
-            yield Static("Series Preferences", id="detail-title")
-            yield Static(
-                (
-                    "Configure how fresh episodes should start. "
-                    "Leave empty to start from the beginning."
-                ),
-                id="app-settings-status",
-            )
-            yield Input(
-                placeholder="Start chapter, for example 2",
-                id="series-start-chapter",
-            )
-            yield Static("Default Audio", id="audio-settings-section-title")
-            yield Static(
-                "Choose the audio track to apply when playback starts.",
-                id="audio-settings-section-help",
-            )
-            yield Vertical(id="series-audio-options")
-            yield Static("Default Subtitles", id="subtitle-settings-section-title")
-            yield Static(
-                "Choose the subtitle track to apply when playback starts.",
-                id="subtitle-settings-section-help",
-            )
-            yield Vertical(id="series-subtitle-options")
+            with VerticalScroll(id="series-preferences-scroll"):
+                yield Static("Series Preferences", id="detail-title")
+                yield Static(
+                    (
+                        "Configure how fresh episodes should start. "
+                        "Leave empty to start from the beginning."
+                    ),
+                    id="app-settings-status",
+                )
+                yield Input(
+                    placeholder="Start chapter, for example 2",
+                    id="series-start-chapter",
+                )
+                yield Static("Default Audio", id="audio-settings-section-title")
+                yield Static(
+                    "Choose the audio track to apply when playback starts.",
+                    id="audio-settings-section-help",
+                )
+                yield Vertical(id="series-audio-options")
+                yield Static("Default Subtitles", id="subtitle-settings-section-title")
+                yield Static(
+                    "Choose the subtitle track to apply when playback starts.",
+                    id="subtitle-settings-section-help",
+                )
+                yield Vertical(id="series-subtitle-options")
+                yield Static("AnimeFillerList", id="animefiller-section-title")
+                yield Static(
+                    (
+                        "Paste an AnimeFillerList show URL to cache filler episodes. "
+                        "You can then skip filler episodes automatically during "
+                        "playback."
+                    ),
+                    id="animefiller-section-help",
+                )
+                yield Input(
+                    placeholder="https://www.animefillerlist.com/shows/dragon-ball",
+                    id="series-animefiller-url",
+                )
+                yield Static("", id="series-animefiller-status")
+                yield Button(
+                    "Show",
+                    id="show-filler-details",
+                    classes="compact-secondary-button",
+                )
+                yield Static("", id="series-filler-details")
+                yield Vertical(id="series-filler-options")
             with Horizontal(id="detail-actions"):
                 yield Button("Save", id="save-series-preferences", variant="primary")
                 yield Button("Cancel", id="cancel-series-preferences")
@@ -1564,11 +1589,18 @@ class SeriesPreferencesScreen(Screen[None]):
 
     def on_mount(self) -> None:
         entry = self._tracker_app().service.resolve_entry(self.slug)
+        self._entry = entry
         if entry.start_chapter_index is not None:
             self.query_one("#series-start-chapter", Input).value = str(
                 entry.start_chapter_index + 1,
             )
+        self.query_one("#series-animefiller-url", Input).value = entry.animefiller_url
         self._mount_track_sets(entry)
+        self._mount_filler_toggle(entry)
+        self._update_filler_status(entry)
+        self.query_one("#series-preferences-scroll", VerticalScroll).refresh(
+            layout=True,
+        )
         self.query_one("#series-start-chapter", Input).focus()
 
     def action_cancel(self) -> None:
@@ -1584,6 +1616,14 @@ class SeriesPreferencesScreen(Screen[None]):
     @on(Button.Pressed, "#cancel-series-preferences")
     def handle_cancel_button(self) -> None:
         self._tracker_app().pop_screen()
+
+    @on(Button.Pressed, "#show-filler-details")
+    def handle_show_filler_details_button(self) -> None:
+        self._show_filler_details = not self._show_filler_details
+        self._update_filler_details()
+        self.query_one("#series-preferences-scroll", VerticalScroll).refresh(
+            layout=True,
+        )
 
     @on(Input.Submitted, "#series-start-chapter")
     def handle_input_submitted(self) -> None:
@@ -1613,6 +1653,11 @@ class SeriesPreferencesScreen(Screen[None]):
                 start_chapter=start_chapter,
                 preferred_audio_track_id=audio_choice,
                 preferred_subtitle_track_id=subtitle_choice,
+                animefiller_url=self.query_one(
+                    "#series-animefiller-url",
+                    Input,
+                ).value,
+                skip_fillers=self._selected_skip_fillers(),
             )
         except ValueError as error:
             self.query_one("#app-settings-status", Static).update(str(error))
@@ -1624,6 +1669,8 @@ class SeriesPreferencesScreen(Screen[None]):
             entry.start_chapter_index is not None
             or entry.preferred_audio_track_id is not None
             or entry.preferred_subtitle_track_id is not None
+            or entry.animefiller_url
+            or entry.skip_fillers
         ):
             message = f"Updated preferences for {entry.title}."
         app.library_message = message
@@ -1656,6 +1703,15 @@ class SeriesPreferencesScreen(Screen[None]):
         )
         self.query_one("#series-audio-options", Vertical).mount(audio_set)
         self.query_one("#series-subtitle-options", Vertical).mount(subtitle_set)
+
+    def _mount_filler_toggle(self, entry: "LibraryEntry") -> None:
+        filler_set = RadioSet(
+            RadioButton("Do not skip filler", value=not entry.skip_fillers),
+            RadioButton("Skip filler episodes", value=entry.skip_fillers),
+            id="series-filler-set",
+            compact=True,
+        )
+        self.query_one("#series-filler-options", Vertical).mount(filler_set)
 
     def _build_track_set(
         self,
@@ -1694,6 +1750,56 @@ class SeriesPreferencesScreen(Screen[None]):
         if pressed is None or pressed.id is None:
             return None
         return choice_by_id.get(pressed.id)
+
+    def _selected_skip_fillers(self) -> bool:
+        radio_set = self.query_one("#series-filler-set", RadioSet)
+        pressed = radio_set.pressed_button
+        if pressed is None or pressed.label is None:
+            return False
+        return str(pressed.label) == "Skip filler episodes"
+
+    def _update_filler_status(self, entry: "LibraryEntry") -> None:
+        if not entry.animefiller_url:
+            message = "AnimeFillerList URL is not configured."
+        elif not entry.filler_episode_numbers:
+            message = "Cached filler episodes: none reported."
+        else:
+            refreshed_at = _format_activity_timestamp(entry.filler_updated_at)
+            message = (
+                f"Cached filler episodes: {len(entry.filler_episode_numbers)} "
+                f"(last refreshed {refreshed_at})"
+            )
+        self.query_one("#series-animefiller-status", Static).update(message)
+        self._update_filler_details()
+
+    def _update_filler_details(self) -> None:
+        button = self.query_one("#show-filler-details", Button)
+        details = self.query_one("#series-filler-details", Static)
+        if not self._show_filler_details:
+            button.label = "Show"
+            details.update("")
+            return
+
+        button.label = "Hide"
+        entry = self._entry
+        if entry is None or not entry.animefiller_url:
+            details.update("Configure an AnimeFillerList URL to view episode lists.")
+            return
+
+        episodes = discover_episodes(entry.directory)
+        if not episodes:
+            details.update("No local episodes were found for this series.")
+            return
+
+        filler_numbers = sorted(set(entry.filler_episode_numbers))
+        canon_numbers = [
+            episode.index
+            for episode in episodes
+            if episode.index not in set(filler_numbers)
+        ]
+        filler_text = _format_episode_number_ranges(filler_numbers)
+        canon_text = _format_episode_number_ranges(canon_numbers)
+        details.update(f"Filler: {filler_text}\nCanon: {canon_text}")
 
     def _tracker_app(self) -> MPVTrackerApp:
         return cast("MPVTrackerApp", self.app)
@@ -1788,6 +1894,21 @@ class MPVTrackerApp(App[None]):
 
     #add-series-view, #confirm-remove-view, #mal-settings-view, #app-settings-view {
         padding: 1 2;
+    }
+
+    #app-settings-view {
+        height: 1fr;
+    }
+
+    #series-preferences-scroll {
+        height: 1fr;
+        margin-bottom: 1;
+    }
+
+    #series-audio-options, #series-subtitle-options, #series-filler-options,
+    #series-filler-details {
+        height: auto;
+        margin-bottom: 1;
     }
 
     #mal-account-layout {
@@ -1938,6 +2059,21 @@ class MPVTrackerApp(App[None]):
 
     .mal-rate-button:focus {
         border: none;
+        background: #355070;
+        color: #f1faee;
+        text-style: bold;
+    }
+
+    .compact-secondary-button {
+        width: 12;
+        min-width: 12;
+        height: 3;
+        margin-right: 0;
+        padding: 0 1;
+        content-align: center middle;
+    }
+
+    .compact-secondary-button:focus {
         background: #355070;
         color: #f1faee;
         text-style: bold;
@@ -2104,6 +2240,29 @@ def _format_activity_timestamp(value: int) -> str:
     if value <= 0:
         return "-"
     return datetime.fromtimestamp(value, UTC).strftime("%d %b %Y %H:%M")
+
+
+def _format_episode_number_ranges(numbers: list[int]) -> str:
+    if not numbers:
+        return "none"
+    ranges: list[str] = []
+    start = numbers[0]
+    end = numbers[0]
+    for number in numbers[1:]:
+        if number == end + 1:
+            end = number
+            continue
+        ranges.append(_range_label(start, end))
+        start = number
+        end = number
+    ranges.append(_range_label(start, end))
+    return ", ".join(ranges)
+
+
+def _range_label(start: int, end: int) -> str:
+    if start == end:
+        return str(start)
+    return f"{start}-{end}"
 
 
 def _sortable_header_label(label: str, *, is_active: bool, descending: bool) -> str:

@@ -20,6 +20,10 @@ class LibraryEntry:
     start_chapter_index: int | None = None
     preferred_audio_track_id: int | None = None
     preferred_subtitle_track_id: int | None = None
+    animefiller_url: str = ""
+    filler_episode_numbers: tuple[int, ...] = ()
+    filler_updated_at: int = 0
+    skip_fillers: bool = False
     added_at: int = 0
 
 

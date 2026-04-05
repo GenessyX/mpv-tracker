@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import mpv_tracker.service as service_module
+from mpv_tracker.animefiller import parse_filler_episode_numbers
 from mpv_tracker.config import DEFAULT_MAL_CLIENT_ID
 from mpv_tracker.library import LibraryRepository
 from mpv_tracker.mal import build_authorization, parse_anime_reference, profile_url
@@ -131,6 +132,84 @@ def test_update_series_preferences_persists_start_chapter(tmp_path: Path) -> Non
 
     assert updated.start_chapter_index == 1
     assert service.resolve_entry("frieren").start_chapter_index == 1
+
+
+def test_update_series_preferences_resolves_filler_episodes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    series_dir = tmp_path / "dragon-ball"
+    series_dir.mkdir()
+
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(
+        repository=repository,
+        app_settings_path=tmp_path / "settings.json",
+    )
+    service.add_series(title="Dragon Ball", directory=series_dir, slug="dragon-ball")
+
+    monkeypatch.setattr(
+        service_module,
+        "resolve_series_filler_episodes",
+        lambda _url, **_kwargs: (30, 31, 32, 33),
+    )
+
+    updated = service.update_series_preferences(
+        "dragon-ball",
+        start_chapter=None,
+        animefiller_url="https://www.animefillerlist.com/shows/dragon-ball",
+        skip_fillers=True,
+    )
+
+    assert updated.animefiller_url == (
+        "https://www.animefillerlist.com/shows/dragon-ball"
+    )
+    assert updated.filler_episode_numbers == (30, 31, 32, 33)
+    assert updated.filler_updated_at > 0
+    assert updated.skip_fillers is True
+
+
+def test_parse_filler_episode_numbers_from_animefiller_html() -> None:
+    html = (
+        '<div class="manga_canon"><span class="Label">Manga Canon Episodes:</span>'
+        '<span class="Episodes"><a href="javascript://" onclick="jumpToNum(1);">'
+        '1-28</a></span></div><div class="mixed_canon/filler"><span '
+        'class="Label">Mixed Canon/Filler Episodes:</span><span class="Episodes">'
+        '<a href="javascript://" onclick="jumpToNum(29);">29</a></span></div>'
+        '<div class="filler"><span class="Label">Filler Episodes:</span><span '
+        'class="Episodes"><a href="javascript://" onclick="jumpToNum(30);">30-33'
+        '</a>, <a href="javascript://" onclick="jumpToNum(45);">45</a>, '
+        '<a href="javascript://" onclick="jumpToNum(79);">79-83</a>, '
+        '<a href="javascript://" onclick="jumpToNum(127);">127-132</a>, '
+        '<a href="javascript://" onclick="jumpToNum(149);">149-153</a></span>'
+        "</div>"
+    )
+
+    parsed = parse_filler_episode_numbers(html)
+
+    assert parsed == (
+        30,
+        31,
+        32,
+        33,
+        45,
+        79,
+        80,
+        81,
+        82,
+        83,
+        127,
+        128,
+        129,
+        130,
+        131,
+        132,
+        149,
+        150,
+        151,
+        152,
+        153,
+    )
 
 
 def test_watch_records_recent_activity(
