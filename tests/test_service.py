@@ -59,6 +59,25 @@ def test_add_and_list_progress(tmp_path: Path) -> None:
     assert progress_items[0].entry.slug == "frieren"
     assert progress_items[0].watched_count == 0
     assert progress_items[0].total_count == 2
+    assert progress_items[0].entry.added_at > 0
+
+
+def test_list_progress_defaults_to_addition_order(tmp_path: Path) -> None:
+    first_dir = tmp_path / "zeta"
+    second_dir = tmp_path / "alpha"
+    first_dir.mkdir()
+    second_dir.mkdir()
+
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(repository=repository)
+    first = service.add_series(title="Zeta", directory=first_dir, slug="zeta")
+    second = service.add_series(title="Alpha", directory=second_dir, slug="alpha")
+
+    progress_items = service.list_progress()
+
+    assert [item.entry.slug for item in progress_items] == ["zeta", "alpha"]
+    assert progress_items[0].entry.added_at == first.added_at
+    assert progress_items[1].entry.added_at == second.added_at
 
 
 def test_remove_series_removes_entry_from_library(tmp_path: Path) -> None:

@@ -30,7 +30,8 @@ class LibraryRepository:
                     title TEXT NOT NULL,
                     directory TEXT NOT NULL UNIQUE,
                     mal_anime_id INTEGER,
-                    start_chapter_index INTEGER
+                    start_chapter_index INTEGER,
+                    added_at INTEGER NOT NULL
                 )
                 """,
             )
@@ -46,14 +47,30 @@ class LibraryRepository:
                 connection.execute(
                     "ALTER TABLE library ADD COLUMN start_chapter_index INTEGER",
                 )
+            if "added_at" not in columns:
+                connection.execute(
+                    (
+                        "ALTER TABLE library "
+                        "ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0"
+                    ),
+                )
+                connection.execute(
+                    (
+                        "UPDATE library "
+                        "SET added_at = CAST(strftime('%s', 'now') AS INTEGER) "
+                        "WHERE added_at = 0"
+                    ),
+                )
 
     def add(self, entry: LibraryEntry) -> None:
         with self._connect() as connection:
             connection.execute(
                 (
                     "INSERT INTO library "
-                    "(slug, title, directory, mal_anime_id, start_chapter_index) "
-                    "VALUES (?, ?, ?, ?, ?)"
+                    "(slug, title, directory, mal_anime_id, start_chapter_index, "
+                    "added_at) "
+                    "VALUES (?, ?, ?, ?, ?, "
+                    "COALESCE(NULLIF(?, 0), CAST(strftime('%s', 'now') AS INTEGER)))"
                 ),
                 (
                     entry.slug,
@@ -61,6 +78,7 @@ class LibraryRepository:
                     str(entry.directory),
                     entry.mal_anime_id,
                     entry.start_chapter_index,
+                    entry.added_at,
                 ),
             )
 
@@ -70,7 +88,7 @@ class LibraryRepository:
                 (
                     "UPDATE library "
                     "SET slug = ?, title = ?, directory = ?, mal_anime_id = ?, "
-                    "start_chapter_index = ? "
+                    "start_chapter_index = ?, added_at = ? "
                     "WHERE slug = ?"
                 ),
                 (
@@ -79,6 +97,7 @@ class LibraryRepository:
                     str(entry.directory),
                     entry.mal_anime_id,
                     entry.start_chapter_index,
+                    entry.added_at,
                     current_slug,
                 ),
             )
@@ -88,7 +107,8 @@ class LibraryRepository:
         with self._connect() as connection:
             row = connection.execute(
                 (
-                    "SELECT slug, title, directory, mal_anime_id, start_chapter_index "
+                    "SELECT slug, title, directory, mal_anime_id, "
+                    "start_chapter_index, added_at "
                     "FROM library WHERE slug = ?"
                 ),
                 (slug,),
@@ -101,6 +121,7 @@ class LibraryRepository:
             directory=Path(row["directory"]),
             mal_anime_id=row["mal_anime_id"],
             start_chapter_index=row["start_chapter_index"],
+            added_at=row["added_at"],
         )
 
     def remove(self, slug: str) -> bool:
@@ -115,9 +136,10 @@ class LibraryRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 (
-                    "SELECT slug, title, directory, mal_anime_id, start_chapter_index "
+                    "SELECT slug, title, directory, mal_anime_id, "
+                    "start_chapter_index, added_at "
                     "FROM library "
-                    "ORDER BY title COLLATE NOCASE"
+                    "ORDER BY added_at ASC"
                 ),
             ).fetchall()
         return [
@@ -127,6 +149,7 @@ class LibraryRepository:
                 directory=Path(row["directory"]),
                 mal_anime_id=row["mal_anime_id"],
                 start_chapter_index=row["start_chapter_index"],
+                added_at=row["added_at"],
             )
             for row in rows
         ]

@@ -119,7 +119,7 @@ class TrackerService:
         except sqlite3.IntegrityError as error:
             msg = "A series with the same slug or directory already exists."
             raise ValueError(msg) from error
-        return entry
+        return self.resolve_entry(effective_slug)
 
     def update_series(
         self,
@@ -148,6 +148,7 @@ class TrackerService:
             directory=resolved_directory,
             mal_anime_id=parse_anime_reference(mal_anime),
             start_chapter_index=existing_entry.start_chapter_index,
+            added_at=existing_entry.added_at,
         )
         try:
             updated = self.repository.update(current_slug, entry)

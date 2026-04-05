@@ -7,6 +7,7 @@ import traceback
 import webbrowser
 from contextlib import contextmanager
 from dataclasses import replace as dataclass_replace
+from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -89,18 +90,27 @@ class LibraryScreen(Screen[None]):
         ("escape", "clear_search_focus", "Unfocus"),
         ("h", "help", "Help"),
         ("m", "mal_login", "MAL"),
+        ("n", "sort_by_name", "Sort Name"),
         ("question_mark", "help", "Help"),
         ("s", "settings", "Settings"),
+        ("t", "sort_by_added", "Sort Added"),
         ("enter", "open_selected", "Open"),
         ("r", "refresh", "Refresh"),
         ("q", "app.quit", "Quit"),
+        ("v", "toggle_sort_direction", "Reverse"),
     ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._sort_field = "added"
+        self._sort_descending = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="library-view"):
             yield Static("Tracked Series", id="title")
             yield Static("", id="library-status")
+            yield Static("", id="library-sort-status")
             yield Input(
                 placeholder="Search by title, slug, or current episode",
                 id="series-search",
@@ -114,6 +124,18 @@ class LibraryScreen(Screen[None]):
 
     def action_focus_search(self) -> None:
         self.query_one("#series-search", Input).focus()
+
+    def action_sort_by_name(self) -> None:
+        self._sort_field = "title"
+        self.refresh_series()
+
+    def action_sort_by_added(self) -> None:
+        self._sort_field = "added"
+        self.refresh_series()
+
+    def action_toggle_sort_direction(self) -> None:
+        self._sort_descending = not self._sort_descending
+        self.refresh_series()
 
     def action_focus_series_list(self) -> None:
         list_view = self.query_one("#series-list", ListView)
@@ -143,11 +165,22 @@ class LibraryScreen(Screen[None]):
             highlighted.slug if isinstance(highlighted, SeriesListItem) else None
         )
         all_items = service.list_progress()
-        progress_items = _filter_series_progress(all_items, search_input.value)
+        filtered_items = _filter_series_progress(all_items, search_input.value)
+        progress_items = _sort_series_progress(
+            filtered_items,
+            sort_field=self._sort_field,
+            descending=self._sort_descending,
+        )
         list_view = self.query_one("#series-list", ListView)
         list_view.clear()
         status_message = app.consume_library_message()
         table_header = self.query_one("#series-table-header", Static)
+        self.query_one("#library-sort-status", Static).update(
+            _library_sort_status(
+                sort_field=self._sort_field,
+                descending=self._sort_descending,
+            ),
+        )
         if not all_items:
             table_header.update("")
             self.query_one("#library-status", Static).update(
@@ -1713,11 +1746,13 @@ def _series_row_renderable(progress: SeriesProgress) -> Table:
     resume_text = "-"
     if progress.current_episode is not None:
         resume_text = _format_seconds(progress.current_position_seconds)
+    added_text = _format_added_at(progress.entry.added_at)
     return _series_table(
-        Text(_truncate_text(progress.entry.title, 34)),
+        Text(progress.entry.title),
         Text(progress_text),
-        Text(_truncate_text(current_episode, 48)),
+        Text(current_episode),
         Text(resume_text),
+        Text(added_text),
     )
 
 
@@ -1727,6 +1762,7 @@ def _series_table_header_renderable() -> Table:
         Text("Progress", style="bold"),
         Text("Current Episode", style="bold"),
         Text("Resume", style="bold"),
+        Text("Added", style="bold"),
     )
 
 
@@ -1735,13 +1771,15 @@ def _series_table(
     progress: Text,
     current_episode: Text,
     resume: Text,
+    added: Text,
 ) -> Table:
-    table = Table.grid(expand=False, padding=(0, 1))
-    table.add_column(width=34)
+    table = Table.grid(expand=True, padding=(0, 1))
+    table.add_column(ratio=3, overflow="ellipsis")
     table.add_column(width=9, justify="right")
-    table.add_column(width=48)
+    table.add_column(ratio=4, overflow="ellipsis")
     table.add_column(width=8, justify="right")
-    table.add_row(title, progress, current_episode, resume)
+    table.add_column(width=11)
+    table.add_row(title, progress, current_episode, resume, added)
     return table
 
 
@@ -1764,12 +1802,52 @@ def _filter_series_progress(
     ]
 
 
+def _sort_series_progress(
+    progress_items: list[SeriesProgress],
+    *,
+    sort_field: str,
+    descending: bool,
+) -> list[SeriesProgress]:
+    if sort_field == "title":
+        return sorted(
+            progress_items,
+            key=lambda item: (
+                item.entry.title.casefold(),
+                item.entry.added_at,
+            ),
+            reverse=descending,
+        )
+    return sorted(
+        progress_items,
+        key=lambda item: (
+            item.entry.added_at,
+            item.entry.title.casefold(),
+        ),
+        reverse=descending,
+    )
+
+
+def _library_sort_status(*, sort_field: str, descending: bool) -> str:
+    field_label = "addition date" if sort_field == "added" else "name"
+    direction_label = "descending" if descending else "ascending"
+    return (
+        f"Sort: {field_label}, {direction_label}. "
+        "Press `t` for addition date, `n` for name, `v` to reverse."
+    )
+
+
 def _truncate_text(value: str, width: int) -> str:
     if len(value) <= width:
         return value
     if width <= 1:
         return value[:width]
     return f"{value[: width - 1]}…"
+
+
+def _format_added_at(value: int) -> str:
+    if value <= 0:
+        return "-"
+    return datetime.fromtimestamp(value, UTC).strftime("%d %b %Y")
 
 
 def _format_detail_summary(detail: SeriesDetail) -> str:
