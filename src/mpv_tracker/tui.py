@@ -22,6 +22,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
     Button,
+    DataTable,
     Footer,
     Header,
     Input,
@@ -74,9 +75,21 @@ class SeriesListItem(ListItem):
 class EpisodeListItem(ListItem):
     """List row representing a discovered episode."""
 
-    def __init__(self, episode_progress: EpisodeProgress) -> None:
+    def __init__(
+        self,
+        episode_progress: EpisodeProgress,
+        *,
+        filler_episode_numbers: set[int],
+    ) -> None:
         self.episode_label = episode_progress.episode.label
-        super().__init__(Static(_format_episode_row(episode_progress)))
+        super().__init__(
+            Static(
+                _episode_row_renderable(
+                    episode_progress,
+                    filler_episode_numbers=filler_episode_numbers,
+                ),
+            ),
+        )
 
 
 class DirectoryMatchItem(ListItem):
@@ -1138,6 +1151,7 @@ class SeriesDetailScreen(Screen[None]):
         self._mal_linked = False
         self._mal_rating_enabled = False
         self._selected_mal_score: int | None = None
+        self._episode_label_by_row_key: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -1168,7 +1182,11 @@ class SeriesDetailScreen(Screen[None]):
                 yield Button("Edit", id="edit")
                 yield Button("Back", id="back")
                 yield Button("Refresh", id="refresh")
-            yield ListView(id="episode-list")
+            yield DataTable(
+                id="episode-list",
+                cursor_type="row",
+                zebra_stripes=True,
+            )
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1211,10 +1229,40 @@ class SeriesDetailScreen(Screen[None]):
         if not detail.episodes:
             playback_status = "No playable episode files were found in this directory."
         self.query_one("#playback-status", Static).update(playback_status)
-        list_view = self.query_one("#episode-list", ListView)
-        list_view.clear()
+        table = self.query_one("#episode-list", DataTable)
+        table.clear(columns=True)
+        table_width = max(table.size.width, self.size.width - 4)
+        index_width = 5
+        watched_width = 7
+        seen_width = 10
+        canon_width = 5
+        # Leave room for padding, borders, and the scrollbar gutter.
+        name_width = max(
+            table_width - index_width - watched_width - seen_width - canon_width - 14,
+            20,
+        )
+        table.add_column("Index", width=index_width)
+        table.add_column("Name", width=name_width)
+        table.add_column("Watched", width=watched_width)
+        table.add_column("Last Seen", width=seen_width)
+        table.add_column("Canon", width=canon_width)
+        self._episode_label_by_row_key.clear()
+        filler_episode_numbers = set(detail.entry.filler_episode_numbers)
         for episode in detail.episodes:
-            list_view.append(EpisodeListItem(episode))
+            row_key = table.add_row(
+                str(episode.episode.index),
+                episode.episode.label,
+                _episode_watched_marker(episode),
+                _episode_seen_time(episode),
+                _episode_canon_marker(
+                    episode,
+                    filler_episode_numbers=filler_episode_numbers,
+                ),
+                key=episode.episode.label,
+            )
+            self._episode_label_by_row_key[row_key.value or episode.episode.label] = (
+                episode.episode.label
+            )
 
         default_index = next(
             (
@@ -1226,8 +1274,8 @@ class SeriesDetailScreen(Screen[None]):
             0,
         )
         if detail.episodes:
-            list_view.index = default_index
-            list_view.focus()
+            table.move_cursor(row=default_index, column=0, animate=False, scroll=True)
+            table.focus()
         self._sync_play_button()
 
     def action_refresh(self) -> None:
@@ -1337,10 +1385,14 @@ class SeriesDetailScreen(Screen[None]):
     def handle_refresh_button(self) -> None:
         self.load_detail()
 
-    @on(ListView.Selected, "#episode-list")
-    def handle_episode_selected(self, event: ListView.Selected) -> None:
-        if isinstance(event.item, EpisodeListItem):
-            self._play(event.item.episode_label)
+    @on(DataTable.RowSelected, "#episode-list")
+    def handle_episode_selected(self, event: DataTable.RowSelected) -> None:
+        row_key = event.row_key.value
+        if row_key is None:
+            return
+        label = self._episode_label_by_row_key.get(row_key)
+        if label is not None:
+            self._play(label)
 
     @work(thread=True, exclusive=True)
     def _play(self, selector: str | None) -> None:
@@ -1378,11 +1430,14 @@ class SeriesDetailScreen(Screen[None]):
         )
 
     def _selected_episode_label(self) -> str | None:
-        list_view = self.query_one("#episode-list", ListView)
-        highlighted = list_view.highlighted_child
-        if isinstance(highlighted, EpisodeListItem):
-            return highlighted.episode_label
-        return None
+        table = self.query_one("#episode-list", DataTable)
+        row_index = table.cursor_row
+        if row_index < 0 or row_index >= table.row_count:
+            return None
+        row_key = table.ordered_rows[row_index].key.value
+        if row_key is None:
+            return None
+        return self._episode_label_by_row_key.get(row_key)
 
     def _focus_adjacent_action(self, buttons: list[Button], step: int) -> None:
         focused = self.focused
@@ -1952,7 +2007,24 @@ class MPVTrackerApp(App[None]):
         margin-bottom: 0;
     }
 
+    #episode-table-header {
+        padding: 0 3 0 1;
+        height: 1;
+        margin-bottom: 0;
+    }
+
     .series-header-cell, .series-header-button {
+        color: #9fb3c8;
+        text-style: bold;
+        background: transparent;
+        border: none;
+        padding: 0;
+        min-height: 1;
+        height: 1;
+        content-align: left middle;
+    }
+
+    .episode-header-cell {
         color: #9fb3c8;
         text-style: bold;
         background: transparent;
@@ -2002,6 +2074,21 @@ class MPVTrackerApp(App[None]):
         width: 11;
     }
 
+    .episode-index-column {
+        width: 5;
+        padding-right: 1;
+    }
+
+    .episode-name-column {
+        width: 1fr;
+        padding-right: 1;
+    }
+
+    .episode-canon-column {
+        width: 5;
+        content-align: center middle;
+    }
+
     #settings-section-title {
         text-style: bold;
         color: #f6bd60;
@@ -2028,6 +2115,12 @@ class MPVTrackerApp(App[None]):
     ListView {
         border: round #355070;
         background: #16212b;
+    }
+
+    #episode-list {
+        border: round #355070;
+        background: #16212b;
+        height: 1fr;
     }
 
     ListItem {
@@ -2172,6 +2265,61 @@ def _series_table(
     return table
 
 
+def _episode_row_renderable(
+    episode_progress: EpisodeProgress,
+    *,
+    filler_episode_numbers: set[int],
+) -> Table:
+    canon = _episode_canon_marker(
+        episode_progress,
+        filler_episode_numbers=filler_episode_numbers,
+    )
+    return _episode_table(
+        Text(str(episode_progress.episode.index), style="bold"),
+        Text(_format_episode_label(episode_progress)),
+        canon,
+    )
+
+
+def _episode_table(
+    index: Text,
+    name: Text,
+    canon: Text,
+) -> Table:
+    table = Table.grid(expand=True, padding=(0, 1))
+    table.add_column(width=5)
+    table.add_column(ratio=1, overflow="ellipsis")
+    table.add_column(width=5, justify="center")
+    table.add_row(index, name, canon)
+    return table
+
+
+def _episode_canon_marker(
+    episode_progress: EpisodeProgress,
+    *,
+    filler_episode_numbers: set[int],
+) -> Text:
+    if episode_progress.episode.index in filler_episode_numbers:
+        return Text("✗", style="bold red")
+    return Text("✓", style="bold green")
+
+
+def _episode_watched_marker(episode_progress: EpisodeProgress) -> Text:
+    if episode_progress.watched:
+        return Text("✓", style="bold green")
+    return Text("✗", style="bold red")
+
+
+def _episode_seen_time(episode_progress: EpisodeProgress) -> Text:
+    if episode_progress.watched:
+        if episode_progress.duration_seconds is not None:
+            return Text(_format_seconds(episode_progress.duration_seconds))
+        return Text("done")
+    if episode_progress.is_current or episode_progress.position_seconds > 0:
+        return Text(_format_seconds(episode_progress.position_seconds))
+    return Text("-")
+
+
 def _filter_series_progress(
     progress_items: list[SeriesProgress],
     query: str,
@@ -2304,6 +2452,13 @@ def _format_detail_summary(detail: SeriesDetail) -> str:
 
 
 def _format_episode_row(episode_progress: EpisodeProgress) -> str:
+    return (
+        f"{episode_progress.episode.index:>2}. "
+        f"{_format_episode_label(episode_progress)}"
+    )
+
+
+def _format_episode_label(episode_progress: EpisodeProgress) -> str:
     markers: list[str] = []
     if episode_progress.watched:
         markers.append("watched")
@@ -2318,10 +2473,7 @@ def _format_episode_row(episode_progress: EpisodeProgress) -> str:
         markers.append(_format_seconds(episode_progress.duration_seconds))
 
     details = ", ".join(markers)
-    return (
-        f"{episode_progress.episode.index:>2}. "
-        f"{episode_progress.episode.label} [{details}]"
-    )
+    return f"{episode_progress.episode.label} [{details}]"
 
 
 def _format_seconds(value: float) -> str:
