@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -90,14 +90,14 @@ class LibraryScreen(Screen[None]):
         ("escape", "clear_search_focus", "Unfocus"),
         ("h", "help", "Help"),
         ("m", "mal_login", "MAL"),
-        ("n", "sort_by_name", "Sort Name"),
+        Binding("n", "sort_by_name", "Sort Name", show=False),
         ("question_mark", "help", "Help"),
         ("s", "settings", "Settings"),
-        ("t", "sort_by_added", "Sort Added"),
+        Binding("t", "sort_by_added", "Sort Added", show=False),
         ("enter", "open_selected", "Open"),
         ("r", "refresh", "Refresh"),
         ("q", "app.quit", "Quit"),
-        ("v", "toggle_sort_direction", "Reverse"),
+        Binding("v", "toggle_sort_direction", "Reverse", show=False),
     ]
 
     def __init__(self) -> None:
@@ -115,7 +115,19 @@ class LibraryScreen(Screen[None]):
                 placeholder="Search by title, slug, or current episode",
                 id="series-search",
             )
-            yield Static("", id="series-table-header")
+            with Horizontal(id="series-table-header"):
+                yield Static("", id="sort-title", classes="series-header-button")
+                yield Static("Progress", classes="series-header-cell progress-column")
+                yield Static(
+                    "Current Episode",
+                    classes="series-header-cell current-column",
+                )
+                yield Static("Resume", classes="series-header-cell resume-column")
+                yield Static(
+                    "",
+                    id="sort-added",
+                    classes="series-header-button added-column",
+                )
             yield ListView(id="series-list")
         yield Footer()
 
@@ -126,12 +138,10 @@ class LibraryScreen(Screen[None]):
         self.query_one("#series-search", Input).focus()
 
     def action_sort_by_name(self) -> None:
-        self._sort_field = "title"
-        self.refresh_series()
+        self._apply_sort("title")
 
     def action_sort_by_added(self) -> None:
-        self._sort_field = "added"
-        self.refresh_series()
+        self._apply_sort("added")
 
     def action_toggle_sort_direction(self) -> None:
         self._sort_descending = not self._sort_descending
@@ -174,7 +184,7 @@ class LibraryScreen(Screen[None]):
         list_view = self.query_one("#series-list", ListView)
         list_view.clear()
         status_message = app.consume_library_message()
-        table_header = self.query_one("#series-table-header", Static)
+        self._update_sort_header()
         self.query_one("#library-sort-status", Static).update(
             _library_sort_status(
                 sort_field=self._sort_field,
@@ -182,14 +192,12 @@ class LibraryScreen(Screen[None]):
             ),
         )
         if not all_items:
-            table_header.update("")
             self.query_one("#library-status", Static).update(
                 status_message
                 or "No series tracked yet. Press `a` to add a tracked series.",
             )
             return
         if not progress_items:
-            table_header.update(_series_table_header_renderable())
             self.query_one("#library-status", Static).update(
                 status_message or "No series match the current search.",
             )
@@ -198,7 +206,6 @@ class LibraryScreen(Screen[None]):
         self.query_one("#library-status", Static).update(
             status_message or "Select a series and press Enter to view details.",
         )
-        table_header.update(_series_table_header_renderable())
         for item in progress_items:
             list_view.append(SeriesListItem(item))
         default_index = next(
@@ -258,6 +265,38 @@ class LibraryScreen(Screen[None]):
     @on(Input.Changed, "#series-search")
     def handle_search_changed(self) -> None:
         self.refresh_series()
+
+    @on(events.Click, "#sort-title")
+    def handle_sort_title(self) -> None:
+        self._apply_sort("title")
+
+    @on(events.Click, "#sort-added")
+    def handle_sort_added(self) -> None:
+        self._apply_sort("added")
+
+    def _apply_sort(self, field: str) -> None:
+        if self._sort_field == field:
+            self._sort_descending = not self._sort_descending
+        else:
+            self._sort_field = field
+            self._sort_descending = False
+        self.refresh_series()
+
+    def _update_sort_header(self) -> None:
+        self.query_one("#sort-title", Static).update(
+            _sortable_header_label(
+                "Title",
+                is_active=self._sort_field == "title",
+                descending=self._sort_descending,
+            ),
+        )
+        self.query_one("#sort-added", Static).update(
+            _sortable_header_label(
+                "Added",
+                is_active=self._sort_field == "added",
+                descending=self._sort_descending,
+            ),
+        )
 
     def _tracker_app(self) -> MPVTrackerApp:
         return cast("MPVTrackerApp", self.app)
@@ -1624,8 +1663,58 @@ class MPVTrackerApp(App[None]):
 
     #series-table-header {
         padding: 0 1;
+        height: 1;
+        margin-bottom: 0;
+    }
+
+    .series-header-cell, .series-header-button {
         color: #9fb3c8;
         text-style: bold;
+        background: transparent;
+        border: none;
+        padding: 0;
+        min-height: 1;
+        height: 1;
+        content-align: left middle;
+    }
+
+    .series-header-button {
+        margin-right: 0;
+        color: #f6bd60;
+        text-style: bold;
+    }
+
+    .series-header-button:focus {
+        background: #264653;
+        color: #f1faee;
+        text-style: bold;
+        border: none;
+    }
+
+    #sort-title {
+        width: 3fr;
+        padding-right: 1;
+    }
+
+    .progress-column {
+        width: 9;
+        content-align: right middle;
+        padding-right: 1;
+    }
+
+    .current-column {
+        width: 4fr;
+        padding-right: 1;
+    }
+
+    .resume-column {
+        width: 8;
+        content-align: right middle;
+        padding-right: 1;
+    }
+
+    .added-column {
+        width: 11;
     }
 
     #settings-section-title {
@@ -1834,6 +1923,13 @@ def _library_sort_status(*, sort_field: str, descending: bool) -> str:
         f"Sort: {field_label}, {direction_label}. "
         "Press `t` for addition date, `n` for name, `v` to reverse."
     )
+
+
+def _sortable_header_label(label: str, *, is_active: bool, descending: bool) -> str:
+    if not is_active:
+        return label
+    arrow = "▼" if descending else "▲"
+    return f"{label} {arrow}"
 
 
 def _truncate_text(value: str, width: int) -> str:

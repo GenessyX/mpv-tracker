@@ -61,6 +61,14 @@ class LibraryRepository:
                         "WHERE added_at = 0"
                     ),
                 )
+            else:
+                connection.execute(
+                    (
+                        "UPDATE library "
+                        "SET added_at = CAST(strftime('%s', 'now') AS INTEGER) "
+                        "WHERE added_at = 0"
+                    ),
+                )
 
     def add(self, entry: LibraryEntry) -> None:
         with self._connect() as connection:
