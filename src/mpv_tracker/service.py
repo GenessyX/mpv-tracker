@@ -267,6 +267,7 @@ class TrackerService:
         if entry.mal_anime_id is not None:
             mal_anime_info = self._resolve_mal_anime_info(entry.mal_anime_id)
         current_episode, current_position_seconds = current_progress(state)
+        inferred_watched_count = watched_count(state, episodes)
         episode_states = state.get("episodes", {})
         if not isinstance(episode_states, dict):
             episode_states = {}
@@ -280,7 +281,10 @@ class TrackerService:
             detailed_episodes.append(
                 EpisodeProgress(
                     episode=episode,
-                    watched=bool(raw_episode_state.get("watched")),
+                    watched=(
+                        bool(raw_episode_state.get("watched"))
+                        or episode.index <= inferred_watched_count
+                    ),
                     position_seconds=_coerce_seconds(
                         raw_episode_state.get("position_seconds", 0.0),
                     ),

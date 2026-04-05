@@ -2314,7 +2314,9 @@ def _episode_seen_time(episode_progress: EpisodeProgress) -> Text:
     if episode_progress.watched:
         if episode_progress.duration_seconds is not None:
             return Text(_format_seconds(episode_progress.duration_seconds))
-        return Text("done")
+        if episode_progress.position_seconds > 0:
+            return Text(_format_seconds(episode_progress.position_seconds))
+        return Text("-")
     if episode_progress.is_current or episode_progress.position_seconds > 0:
         return Text(_format_seconds(episode_progress.position_seconds))
     return Text("-")

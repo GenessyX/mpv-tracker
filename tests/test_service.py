@@ -682,6 +682,32 @@ def test_watched_count_uses_current_episode_as_minimum_progress(
     assert watched_count(state, episodes) == 57
 
 
+def test_get_series_detail_marks_inferred_prior_episodes_as_watched(
+    tmp_path: Path,
+) -> None:
+    series_dir = tmp_path / "series"
+    series_dir.mkdir()
+    for index in range(1, 61):
+        (series_dir / f"{index:02d}.mkv").write_text("")
+
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(repository=repository)
+    service.add_series(title="Series", directory=series_dir, slug="series")
+    save_state(
+        series_dir,
+        {
+            "current": {"episode": "58.mkv", "position_seconds": 12.0},
+            "episodes": {"57.mkv": {"watched": True, "position_seconds": 0.0}},
+        },
+    )
+
+    detail = service.get_series_detail("series")
+
+    assert detail.watched_count == 57
+    assert detail.episodes[56].watched is True
+    assert detail.episodes[57].is_current is True
+
+
 def test_is_ipc_disconnect_matches_broken_pipe() -> None:
     assert _is_ipc_disconnect(BrokenPipeError())
 
