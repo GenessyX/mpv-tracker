@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from rich.markup import escape
+from rich.table import Table
+from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -56,7 +58,7 @@ class SeriesListItem(ListItem):
 
     def __init__(self, progress: SeriesProgress) -> None:
         self.slug = progress.entry.slug
-        super().__init__(Static(_format_series_row(progress)))
+        super().__init__(Static(_series_row_renderable(progress)))
 
 
 class EpisodeListItem(ListItem):
@@ -154,7 +156,7 @@ class LibraryScreen(Screen[None]):
             )
             return
         if not progress_items:
-            table_header.update(_series_table_header())
+            table_header.update(_series_table_header_renderable())
             self.query_one("#library-status", Static).update(
                 status_message or "No series match the current search.",
             )
@@ -163,7 +165,7 @@ class LibraryScreen(Screen[None]):
         self.query_one("#library-status", Static).update(
             status_message or "Select a series and press Enter to view details.",
         )
-        table_header.update(_series_table_header())
+        table_header.update(_series_table_header_renderable())
         for item in progress_items:
             list_view.append(SeriesListItem(item))
         default_index = next(
@@ -1587,6 +1589,12 @@ class MPVTrackerApp(App[None]):
         margin-bottom: 1;
     }
 
+    #series-table-header {
+        padding: 0 1;
+        color: #9fb3c8;
+        text-style: bold;
+    }
+
     #settings-section-title {
         text-style: bold;
         color: #f6bd60;
@@ -1699,22 +1707,42 @@ class MPVTrackerApp(App[None]):
             traceback.print_exception(error, file=self.error_console.file)
 
 
-def _format_series_row(progress: SeriesProgress) -> str:
+def _series_row_renderable(progress: SeriesProgress) -> Table:
     progress_text = f"{progress.watched_count}/{progress.total_count}"
     current_episode = progress.current_episode or "-"
     resume_text = "-"
     if progress.current_episode is not None:
         resume_text = _format_seconds(progress.current_position_seconds)
-    return (
-        f"{_truncate_text(progress.entry.title, 34):<34}  "
-        f"{progress_text:>9}  "
-        f"{_truncate_text(current_episode, 48):<48}  "
-        f"{resume_text:>8}"
+    return _series_table(
+        Text(_truncate_text(progress.entry.title, 34)),
+        Text(progress_text),
+        Text(_truncate_text(current_episode, 48)),
+        Text(resume_text),
     )
 
 
-def _series_table_header() -> str:
-    return f"{'Title':<34}  {'Progress':>9}  {'Current Episode':<48}  {'Resume':>8}"
+def _series_table_header_renderable() -> Table:
+    return _series_table(
+        Text("Title", style="bold"),
+        Text("Progress", style="bold"),
+        Text("Current Episode", style="bold"),
+        Text("Resume", style="bold"),
+    )
+
+
+def _series_table(
+    title: Text,
+    progress: Text,
+    current_episode: Text,
+    resume: Text,
+) -> Table:
+    table = Table.grid(expand=False, padding=(0, 1))
+    table.add_column(width=34)
+    table.add_column(width=9, justify="right")
+    table.add_column(width=48)
+    table.add_column(width=8, justify="right")
+    table.add_row(title, progress, current_episode, resume)
+    return table
 
 
 def _filter_series_progress(
