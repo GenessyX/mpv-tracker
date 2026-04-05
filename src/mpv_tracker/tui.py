@@ -79,9 +79,12 @@ class LibraryScreen(Screen[None]):
     """First screen showing all tracked series."""
 
     BINDINGS: ClassVar[list[BINDING]] = [
+        ("/", "focus_search", "Search"),
         ("a", "add_series", "Add"),
+        ("down", "focus_series_list", "List"),
         ("e", "edit_series", "Edit"),
         ("d", "remove_series", "Remove"),
+        ("escape", "clear_search_focus", "Unfocus"),
         ("h", "help", "Help"),
         ("m", "mal_login", "MAL"),
         ("question_mark", "help", "Help"),
@@ -96,33 +99,86 @@ class LibraryScreen(Screen[None]):
         with Vertical(id="library-view"):
             yield Static("Tracked Series", id="title")
             yield Static("", id="library-status")
+            yield Input(
+                placeholder="Search by title, slug, or current episode",
+                id="series-search",
+            )
+            yield Static("", id="series-table-header")
             yield ListView(id="series-list")
         yield Footer()
 
     def on_mount(self) -> None:
         self.refresh_series()
 
+    def action_focus_search(self) -> None:
+        self.query_one("#series-search", Input).focus()
+
+    def action_focus_series_list(self) -> None:
+        list_view = self.query_one("#series-list", ListView)
+        if list_view.children:
+            list_view.index = None
+            list_view.index = 0
+            self.call_after_refresh(self._focus_series_list)
+
+    def _focus_series_list(self) -> None:
+        list_view = self.query_one("#series-list", ListView)
+        if list_view.children:
+            list_view.focus()
+
+    def action_clear_search_focus(self) -> None:
+        search_input = self.query_one("#series-search", Input)
+        if self.focused is search_input:
+            self.action_focus_series_list()
+
     def refresh_series(self) -> None:
         app = self._tracker_app()
         service = app.service
-        progress_items = service.list_progress()
+        search_input = self.query_one("#series-search", Input)
+        list_view = self.query_one("#series-list", ListView)
+        keep_search_focus = self.focused is search_input
+        highlighted = list_view.highlighted_child
+        selected_slug = (
+            highlighted.slug if isinstance(highlighted, SeriesListItem) else None
+        )
+        all_items = service.list_progress()
+        progress_items = _filter_series_progress(all_items, search_input.value)
         list_view = self.query_one("#series-list", ListView)
         list_view.clear()
         status_message = app.consume_library_message()
-        if not progress_items:
+        table_header = self.query_one("#series-table-header", Static)
+        if not all_items:
+            table_header.update("")
             self.query_one("#library-status", Static).update(
                 status_message
                 or "No series tracked yet. Press `a` to add a tracked series.",
+            )
+            return
+        if not progress_items:
+            table_header.update(_series_table_header())
+            self.query_one("#library-status", Static).update(
+                status_message or "No series match the current search.",
             )
             return
 
         self.query_one("#library-status", Static).update(
             status_message or "Select a series and press Enter to view details.",
         )
+        table_header.update(_series_table_header())
         for item in progress_items:
             list_view.append(SeriesListItem(item))
-        list_view.index = 0
-        list_view.focus()
+        default_index = next(
+            (
+                index
+                for index, item in enumerate(progress_items)
+                if item.entry.slug == selected_slug
+            ),
+            0,
+        )
+        list_view.index = default_index
+        if keep_search_focus:
+            search_input.focus()
+        else:
+            list_view.focus()
 
     def action_refresh(self) -> None:
         self.refresh_series()
@@ -163,6 +219,10 @@ class LibraryScreen(Screen[None]):
     def handle_open_series(self, event: ListView.Selected) -> None:
         if isinstance(event.item, SeriesListItem):
             self._tracker_app().push_screen(SeriesDetailScreen(event.item.slug))
+
+    @on(Input.Changed, "#series-search")
+    def handle_search_changed(self) -> None:
+        self.refresh_series()
 
     def _tracker_app(self) -> MPVTrackerApp:
         return cast("MPVTrackerApp", self.app)
@@ -1640,16 +1700,48 @@ class MPVTrackerApp(App[None]):
 
 
 def _format_series_row(progress: SeriesProgress) -> str:
-    current = ""
+    progress_text = f"{progress.watched_count}/{progress.total_count}"
+    current_episode = progress.current_episode or "-"
+    resume_text = "-"
     if progress.current_episode is not None:
-        current = (
-            f" | resume {progress.current_episode} @ "
-            f"{_format_seconds(progress.current_position_seconds)}"
-        )
+        resume_text = _format_seconds(progress.current_position_seconds)
     return (
-        f"{progress.entry.title} [{progress.watched_count}/{progress.total_count}]"
-        f"{current}"
+        f"{_truncate_text(progress.entry.title, 34):<34}  "
+        f"{progress_text:>9}  "
+        f"{_truncate_text(current_episode, 48):<48}  "
+        f"{resume_text:>8}"
     )
+
+
+def _series_table_header() -> str:
+    return f"{'Title':<34}  {'Progress':>9}  {'Current Episode':<48}  {'Resume':>8}"
+
+
+def _filter_series_progress(
+    progress_items: list[SeriesProgress],
+    query: str,
+) -> list[SeriesProgress]:
+    normalized_query = query.strip().casefold()
+    if not normalized_query:
+        return progress_items
+    return [
+        item
+        for item in progress_items
+        if normalized_query in item.entry.title.casefold()
+        or normalized_query in item.entry.slug.casefold()
+        or (
+            item.current_episode is not None
+            and normalized_query in item.current_episode.casefold()
+        )
+    ]
+
+
+def _truncate_text(value: str, width: int) -> str:
+    if len(value) <= width:
+        return value
+    if width <= 1:
+        return value[:width]
+    return f"{value[: width - 1]}…"
 
 
 def _format_detail_summary(detail: SeriesDetail) -> str:
