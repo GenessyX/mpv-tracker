@@ -31,6 +31,8 @@ class LibraryRepository:
                     directory TEXT NOT NULL UNIQUE,
                     mal_anime_id INTEGER,
                     start_chapter_index INTEGER,
+                    preferred_audio_track_id INTEGER,
+                    preferred_subtitle_track_id INTEGER,
                     added_at INTEGER NOT NULL
                 )
                 """,
@@ -46,6 +48,17 @@ class LibraryRepository:
             if "start_chapter_index" not in columns:
                 connection.execute(
                     "ALTER TABLE library ADD COLUMN start_chapter_index INTEGER",
+                )
+            if "preferred_audio_track_id" not in columns:
+                connection.execute(
+                    "ALTER TABLE library ADD COLUMN preferred_audio_track_id INTEGER",
+                )
+            if "preferred_subtitle_track_id" not in columns:
+                connection.execute(
+                    (
+                        "ALTER TABLE library "
+                        "ADD COLUMN preferred_subtitle_track_id INTEGER"
+                    ),
                 )
             if "added_at" not in columns:
                 connection.execute(
@@ -76,8 +89,8 @@ class LibraryRepository:
                 (
                     "INSERT INTO library "
                     "(slug, title, directory, mal_anime_id, start_chapter_index, "
-                    "added_at) "
-                    "VALUES (?, ?, ?, ?, ?, "
+                    "preferred_audio_track_id, preferred_subtitle_track_id, added_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, "
                     "COALESCE(NULLIF(?, 0), CAST(strftime('%s', 'now') AS INTEGER)))"
                 ),
                 (
@@ -86,6 +99,8 @@ class LibraryRepository:
                     str(entry.directory),
                     entry.mal_anime_id,
                     entry.start_chapter_index,
+                    entry.preferred_audio_track_id,
+                    entry.preferred_subtitle_track_id,
                     entry.added_at,
                 ),
             )
@@ -96,7 +111,8 @@ class LibraryRepository:
                 (
                     "UPDATE library "
                     "SET slug = ?, title = ?, directory = ?, mal_anime_id = ?, "
-                    "start_chapter_index = ?, added_at = ? "
+                    "start_chapter_index = ?, preferred_audio_track_id = ?, "
+                    "preferred_subtitle_track_id = ?, added_at = ? "
                     "WHERE slug = ?"
                 ),
                 (
@@ -105,6 +121,8 @@ class LibraryRepository:
                     str(entry.directory),
                     entry.mal_anime_id,
                     entry.start_chapter_index,
+                    entry.preferred_audio_track_id,
+                    entry.preferred_subtitle_track_id,
                     entry.added_at,
                     current_slug,
                 ),
@@ -116,7 +134,8 @@ class LibraryRepository:
             row = connection.execute(
                 (
                     "SELECT slug, title, directory, mal_anime_id, "
-                    "start_chapter_index, added_at "
+                    "start_chapter_index, preferred_audio_track_id, "
+                    "preferred_subtitle_track_id, added_at "
                     "FROM library WHERE slug = ?"
                 ),
                 (slug,),
@@ -129,6 +148,8 @@ class LibraryRepository:
             directory=Path(row["directory"]),
             mal_anime_id=row["mal_anime_id"],
             start_chapter_index=row["start_chapter_index"],
+            preferred_audio_track_id=row["preferred_audio_track_id"],
+            preferred_subtitle_track_id=row["preferred_subtitle_track_id"],
             added_at=row["added_at"],
         )
 
@@ -145,7 +166,8 @@ class LibraryRepository:
             rows = connection.execute(
                 (
                     "SELECT slug, title, directory, mal_anime_id, "
-                    "start_chapter_index, added_at "
+                    "start_chapter_index, preferred_audio_track_id, "
+                    "preferred_subtitle_track_id, added_at "
                     "FROM library "
                     "ORDER BY added_at ASC"
                 ),
@@ -157,6 +179,8 @@ class LibraryRepository:
                 directory=Path(row["directory"]),
                 mal_anime_id=row["mal_anime_id"],
                 start_chapter_index=row["start_chapter_index"],
+                preferred_audio_track_id=row["preferred_audio_track_id"],
+                preferred_subtitle_track_id=row["preferred_subtitle_track_id"],
                 added_at=row["added_at"],
             )
             for row in rows

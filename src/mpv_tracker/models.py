@@ -18,7 +18,18 @@ class LibraryEntry:
     directory: Path
     mal_anime_id: int | None = None
     start_chapter_index: int | None = None
+    preferred_audio_track_id: int | None = None
+    preferred_subtitle_track_id: int | None = None
     added_at: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class MediaTrackOption:
+    """Selectable media track option discovered from a video file."""
+
+    track_id: int
+    track_type: str
+    label: str
 
 
 @dataclass(slots=True, frozen=True)

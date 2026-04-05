@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mpv_tracker.config import WATCHED_THRESHOLD
+from mpv_tracker.models import MediaTrackOption
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -46,7 +47,7 @@ class _ObservedPlaybackState:
 class MPVWatcher:
     """Run MPV and stream playback updates through its IPC socket."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         media_directory: Path,
         *,
@@ -54,14 +55,19 @@ class MPVWatcher:
         playlist_start: int,
         start_position_seconds: float = 0.0,
         preferred_start_chapter_index: int | None = None,
+        preferred_audio_track_id: int | None = None,
+        preferred_subtitle_track_id: int | None = None,
     ) -> None:
         self._media_directory = media_directory
         self._episode_name = episode_name
         self._playlist_start = playlist_start
         self._start_position_seconds = start_position_seconds
         self._preferred_start_chapter_index = preferred_start_chapter_index
+        self._preferred_audio_track_id = preferred_audio_track_id
+        self._preferred_subtitle_track_id = preferred_subtitle_track_id
         self._initial_seek_applied = start_position_seconds <= 0
         self._chapter_seek_episode_name: str | None = None
+        self._track_selection_episode_name: str | None = None
 
     def watch(
         self,
@@ -272,7 +278,61 @@ class MPVWatcher:
             latest = chapter_snapshot
             if on_update is not None:
                 on_update(latest)
+        track_snapshot = self._maybe_apply_preferred_tracks(
+            client,
+            observed,
+            message,
+        )
+        if track_snapshot is not None:
+            latest = track_snapshot
+            if on_update is not None:
+                on_update(latest)
         return latest
+
+    def _maybe_apply_preferred_tracks(
+        self,
+        client: socket.socket,
+        observed: _ObservedPlaybackState,
+        message: dict[str, object],
+    ) -> PlaybackSnapshot | None:
+        if (
+            self._preferred_audio_track_id is None
+            and self._preferred_subtitle_track_id is None
+        ):
+            return None
+        if self._track_selection_episode_name == observed.episode_name:
+            return None
+        event_name = message.get("event")
+        property_name = message.get("name")
+        should_apply = event_name == "property-change" and property_name in {
+            "time-pos",
+            "duration",
+        }
+        if not should_apply:
+            return None
+
+        if self._preferred_audio_track_id is not None:
+            audio_value: str | int = (
+                "no"
+                if self._preferred_audio_track_id == 0
+                else self._preferred_audio_track_id
+            )
+            self._send_command(
+                client,
+                ["set_property", "aid", audio_value],
+            )
+        if self._preferred_subtitle_track_id is not None:
+            subtitle_value: str | int = (
+                "no"
+                if self._preferred_subtitle_track_id == 0
+                else self._preferred_subtitle_track_id
+            )
+            self._send_command(
+                client,
+                ["set_property", "sid", subtitle_value],
+            )
+        self._track_selection_episode_name = observed.episode_name
+        return _snapshot_from_observed_state(observed)
 
     def _send_command(self, client: socket.socket, command: list[object]) -> None:
         payload = json.dumps({"command": command}).encode("utf-8") + b"\n"
@@ -303,6 +363,131 @@ class MPVWatcher:
                 if isinstance(key, str)
             }
         return {}
+
+
+def probe_media_tracks(
+    video_path: Path,
+) -> tuple[list[MediaTrackOption], list[MediaTrackOption]]:
+    """Inspect a media file through MPV and return audio and subtitle tracks."""
+    with tempfile.TemporaryDirectory(prefix="mpv-tracker-probe-") as temp_dir:
+        socket_path = Path(temp_dir) / "mpv.sock"
+        try:
+            process = subprocess.Popen(  # noqa: S603
+                [  # noqa: S607
+                    "mpv",
+                    f"--input-ipc-server={socket_path}",
+                    "--vo=null",
+                    "--ao=null",
+                    "--force-window=no",
+                    "--no-config",
+                    "--input-terminal=no",
+                    "--really-quiet",
+                    "--idle=no",
+                    "--pause=yes",
+                    "--mute=yes",
+                    str(video_path),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError as error:
+            msg = "The `mpv` executable was not found in PATH."
+            raise RuntimeError(msg) from error
+
+        try:
+            client = _wait_for_probe_socket(socket_path)
+            with client:
+                client.settimeout(0.5)
+                for _ in range(40):
+                    _send_probe_command(client, ["get_property", "track-list"])
+                    message = _read_probe_message(client)
+                    if message is None:
+                        time.sleep(0.1)
+                        continue
+                    data = message.get("data")
+                    tracks = _parse_media_tracks(data)
+                    if tracks is not None:
+                        _send_probe_command(client, ["quit"])
+                        process.wait(timeout=5)
+                        return tracks
+                    time.sleep(0.1)
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+    return ([], [])
+
+
+def _wait_for_probe_socket(socket_path: Path) -> socket.socket:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if socket_path.exists():
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.connect(os.fspath(socket_path))
+            return client
+        time.sleep(0.1)
+    msg = "Timed out waiting for MPV IPC socket."
+    raise TimeoutError(msg)
+
+
+def _send_probe_command(client: socket.socket, command: list[object]) -> None:
+    payload = json.dumps({"command": command}).encode("utf-8") + b"\n"
+    client.sendall(payload)
+
+
+def _read_probe_message(client: socket.socket) -> dict[str, object] | None:
+    chunks = bytearray()
+    while not chunks.endswith(b"\n"):
+        try:
+            packet = client.recv(4096)
+        except TimeoutError:
+            return None
+        if not packet:
+            return None
+        chunks.extend(packet)
+    try:
+        message = json.loads(chunks.decode("utf-8").strip())
+    except json.JSONDecodeError:
+        return None
+    return message if isinstance(message, dict) else None
+
+
+def _parse_media_tracks(
+    value: object,
+) -> tuple[list[MediaTrackOption], list[MediaTrackOption]] | None:
+    if not isinstance(value, list):
+        return None
+    audio_tracks: list[MediaTrackOption] = []
+    subtitle_tracks: list[MediaTrackOption] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        track_id = item.get("id")
+        track_type = item.get("type")
+        if not isinstance(track_id, int) or track_type not in {"audio", "sub"}:
+            continue
+        label = _format_track_label(track_id, item)
+        option = MediaTrackOption(
+            track_id=track_id,
+            track_type=track_type,
+            label=label,
+        )
+        if track_type == "audio":
+            audio_tracks.append(option)
+        else:
+            subtitle_tracks.append(option)
+    return (audio_tracks, subtitle_tracks)
+
+
+def _format_track_label(track_id: int, item: dict[str, object]) -> str:
+    title = item.get("title")
+    lang = item.get("lang")
+    pieces = [f"{track_id}"]
+    if isinstance(lang, str) and lang:
+        pieces.append(lang)
+    if isinstance(title, str) and title:
+        pieces.append(title)
+    return " - ".join(pieces)
 
 
 def _apply_property_change(

@@ -27,6 +27,8 @@ from textual.widgets import (
     Input,
     ListItem,
     ListView,
+    RadioButton,
+    RadioSet,
     Static,
 )
 
@@ -37,13 +39,18 @@ from mpv_tracker.mal import (
     cache_avatar,
     profile_url,
 )
-from mpv_tracker.models import AppSettings, MALAnimeInfo, MALSettings
+from mpv_tracker.models import AppSettings, MALAnimeInfo, MALSettings, MediaTrackOption
 from mpv_tracker.service import TrackerService
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from mpv_tracker.models import EpisodeProgress, SeriesDetail, SeriesProgress
+    from mpv_tracker.models import (
+        EpisodeProgress,
+        LibraryEntry,
+        SeriesDetail,
+        SeriesProgress,
+    )
 
 BINDING = Binding | tuple[str, str] | tuple[str, str, str]
 
@@ -1507,6 +1514,8 @@ class SeriesPreferencesScreen(Screen[None]):
     def __init__(self, slug: str) -> None:
         super().__init__()
         self.slug = slug
+        self._audio_choice_by_id: dict[str, int | None] = {}
+        self._subtitle_choice_by_id: dict[str, int | None] = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -1523,6 +1532,18 @@ class SeriesPreferencesScreen(Screen[None]):
                 placeholder="Start chapter, for example 2",
                 id="series-start-chapter",
             )
+            yield Static("Default Audio", id="audio-settings-section-title")
+            yield Static(
+                "Choose the audio track to apply when playback starts.",
+                id="audio-settings-section-help",
+            )
+            yield Vertical(id="series-audio-options")
+            yield Static("Default Subtitles", id="subtitle-settings-section-title")
+            yield Static(
+                "Choose the subtitle track to apply when playback starts.",
+                id="subtitle-settings-section-help",
+            )
+            yield Vertical(id="series-subtitle-options")
             with Horizontal(id="detail-actions"):
                 yield Button("Save", id="save-series-preferences", variant="primary")
                 yield Button("Cancel", id="cancel-series-preferences")
@@ -1534,6 +1555,7 @@ class SeriesPreferencesScreen(Screen[None]):
             self.query_one("#series-start-chapter", Input).value = str(
                 entry.start_chapter_index + 1,
             )
+        self._mount_track_sets(entry)
         self.query_one("#series-start-chapter", Input).focus()
 
     def action_cancel(self) -> None:
@@ -1565,9 +1587,19 @@ class SeriesPreferencesScreen(Screen[None]):
                 return
             start_chapter = int(raw_value)
         try:
+            audio_choice = self._selected_track_choice(
+                "#series-audio-set",
+                self._audio_choice_by_id,
+            )
+            subtitle_choice = self._selected_track_choice(
+                "#series-subtitle-set",
+                self._subtitle_choice_by_id,
+            )
             entry = self._tracker_app().service.update_series_preferences(
                 self.slug,
                 start_chapter=start_chapter,
+                preferred_audio_track_id=audio_choice,
+                preferred_subtitle_track_id=subtitle_choice,
             )
         except ValueError as error:
             self.query_one("#app-settings-status", Static).update(str(error))
@@ -1575,16 +1607,80 @@ class SeriesPreferencesScreen(Screen[None]):
 
         app = self._tracker_app()
         message = "Updated series preferences."
-        if entry.start_chapter_index is not None:
-            message = (
-                f"Updated preferences for {entry.title}: start from chapter "
-                f"{entry.start_chapter_index + 1}."
-            )
+        if (
+            entry.start_chapter_index is not None
+            or entry.preferred_audio_track_id is not None
+            or entry.preferred_subtitle_track_id is not None
+        ):
+            message = f"Updated preferences for {entry.title}."
         app.library_message = message
         app.pop_screen()
         if isinstance(app.screen, SeriesDetailScreen):
             app.screen.load_detail()
         app.refresh_library()
+
+    def _mount_track_sets(self, entry: "LibraryEntry") -> None:
+        service = self._tracker_app().service
+        try:
+            audio_tracks, subtitle_tracks = service.get_series_track_options(self.slug)
+        except Exception as error:  # noqa: BLE001
+            self.query_one("#app-settings-status", Static).update(
+                f"Failed to probe tracks: {error}",
+            )
+            audio_tracks, subtitle_tracks = ([], [])
+
+        audio_set = self._build_track_set(
+            options=audio_tracks,
+            current_value=entry.preferred_audio_track_id,
+            radio_set_id="series-audio-set",
+            choice_by_id=self._audio_choice_by_id,
+        )
+        subtitle_set = self._build_track_set(
+            options=subtitle_tracks,
+            current_value=entry.preferred_subtitle_track_id,
+            radio_set_id="series-subtitle-set",
+            choice_by_id=self._subtitle_choice_by_id,
+        )
+        self.query_one("#series-audio-options", Vertical).mount(audio_set)
+        self.query_one("#series-subtitle-options", Vertical).mount(subtitle_set)
+
+    def _build_track_set(
+        self,
+        *,
+        options: list[MediaTrackOption],
+        current_value: int | None,
+        radio_set_id: str,
+        choice_by_id: dict[str, int | None],
+    ) -> RadioSet:
+        buttons: list[RadioButton] = []
+        choices = [
+            ("Default", None),
+            ("Disabled", 0),
+            *[(option.label, option.track_id) for option in options],
+        ]
+        selected_value = current_value
+        for index, (label, value) in enumerate(choices):
+            button_id = f"{radio_set_id}-{index}"
+            choice_by_id[button_id] = value
+            buttons.append(
+                RadioButton(
+                    label,
+                    value=value == selected_value,
+                    id=button_id,
+                ),
+            )
+        return RadioSet(*buttons, id=radio_set_id, compact=True)
+
+    def _selected_track_choice(
+        self,
+        selector: str,
+        choice_by_id: dict[str, int | None],
+    ) -> int | None:
+        radio_set = self.query_one(selector, RadioSet)
+        pressed = radio_set.pressed_button
+        if pressed is None or pressed.id is None:
+            return None
+        return choice_by_id.get(pressed.id)
 
     def _tracker_app(self) -> MPVTrackerApp:
         return cast("MPVTrackerApp", self.app)

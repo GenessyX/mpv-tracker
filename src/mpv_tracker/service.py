@@ -33,10 +33,11 @@ from mpv_tracker.models import (
     LibraryEntry,
     MALAnimeInfo,
     MALSettings,
+    MediaTrackOption,
     SeriesDetail,
     SeriesProgress,
 )
-from mpv_tracker.mpv_client import MPVWatcher, PlaybackSnapshot
+from mpv_tracker.mpv_client import MPVWatcher, PlaybackSnapshot, probe_media_tracks
 from mpv_tracker.progress import (
     current_progress,
     discover_episodes,
@@ -113,6 +114,8 @@ class TrackerService:
             directory=resolved_directory,
             mal_anime_id=parse_anime_reference(mal_anime),
             start_chapter_index=_parse_start_chapter(start_chapter),
+            preferred_audio_track_id=None,
+            preferred_subtitle_track_id=None,
         )
         try:
             self.repository.add(entry)
@@ -148,6 +151,8 @@ class TrackerService:
             directory=resolved_directory,
             mal_anime_id=parse_anime_reference(mal_anime),
             start_chapter_index=existing_entry.start_chapter_index,
+            preferred_audio_track_id=existing_entry.preferred_audio_track_id,
+            preferred_subtitle_track_id=existing_entry.preferred_subtitle_track_id,
             added_at=existing_entry.added_at,
         )
         try:
@@ -295,6 +300,8 @@ class TrackerService:
             playlist_start=playlist_start,
             start_position_seconds=start_position,
             preferred_start_chapter_index=entry.start_chapter_index,
+            preferred_audio_track_id=entry.preferred_audio_track_id,
+            preferred_subtitle_track_id=entry.preferred_subtitle_track_id,
         )
         previous_snapshot: tuple[str, float, float | None, bool] | None = None
 
@@ -347,6 +354,8 @@ class TrackerService:
         slug: str,
         *,
         start_chapter: int | None,
+        preferred_audio_track_id: int | None = None,
+        preferred_subtitle_track_id: int | None = None,
     ) -> LibraryEntry:
         """Update per-series preferences."""
         entry = self.resolve_entry(slug)
@@ -356,9 +365,23 @@ class TrackerService:
             directory=entry.directory,
             mal_anime_id=entry.mal_anime_id,
             start_chapter_index=_parse_start_chapter(start_chapter),
+            preferred_audio_track_id=preferred_audio_track_id,
+            preferred_subtitle_track_id=preferred_subtitle_track_id,
+            added_at=entry.added_at,
         )
         self.repository.update(slug, updated)
         return updated
+
+    def get_series_track_options(
+        self,
+        slug: str,
+    ) -> tuple[list[MediaTrackOption], list[MediaTrackOption]]:
+        """Probe the first episode of a series for selectable tracks."""
+        entry = self.resolve_entry(slug)
+        episodes = discover_episodes(entry.directory)
+        if not episodes:
+            return ([], [])
+        return probe_media_tracks(episodes[0].path)
 
     def rate_series_on_mal(self, slug: str, *, score: int) -> None:
         """Set the linked MAL score from a 1-10 input."""
