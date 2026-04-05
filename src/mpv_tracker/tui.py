@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from mpv_tracker.models import (
         EpisodeProgress,
         LibraryEntry,
+        RecentActivityEntry,
         SeriesDetail,
         SeriesProgress,
     )
@@ -85,6 +86,14 @@ class DirectoryMatchItem(ListItem):
         super().__init__(Static(str(path)))
 
 
+class RecentActivityListItem(ListItem):
+    """List row for a recent playback entry."""
+
+    def __init__(self, entry: "RecentActivityEntry") -> None:
+        self.slug = entry.slug
+        super().__init__(Static(_format_recent_activity_row(entry)))
+
+
 class LibraryScreen(Screen[None]):
     """First screen showing all tracked series."""
 
@@ -100,6 +109,7 @@ class LibraryScreen(Screen[None]):
         Binding("n", "sort_by_name", "Sort Name", show=False),
         ("question_mark", "help", "Help"),
         ("s", "settings", "Settings"),
+        ("y", "recent_activity", "Recent"),
         Binding("t", "sort_by_added", "Sort Added", show=False),
         ("enter", "open_selected", "Open"),
         ("r", "refresh", "Refresh"),
@@ -143,6 +153,9 @@ class LibraryScreen(Screen[None]):
 
     def action_focus_search(self) -> None:
         self.query_one("#series-search", Input).focus()
+
+    def action_recent_activity(self) -> None:
+        self._tracker_app().push_screen(RecentActivityScreen())
 
     def action_sort_by_name(self) -> None:
         self._apply_sort("title")
@@ -1705,6 +1718,61 @@ class HelpScreen(Screen[None]):
         self.app.pop_screen()
 
 
+class RecentActivityScreen(Screen[None]):
+    """Recently watched playback sessions."""
+
+    BINDINGS: ClassVar[list[BINDING]] = [
+        ("escape", "close_screen", "Back"),
+        ("enter", "open_selected", "Open"),
+        ("r", "refresh", "Refresh"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Vertical(id="detail-view"):
+            yield Static("Recent Activity", id="detail-title")
+            yield Static("", id="series-info-status")
+            yield ListView(id="recent-activity-list")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.refresh_activity()
+
+    def action_close_screen(self) -> None:
+        self.app.pop_screen()
+
+    def action_refresh(self) -> None:
+        self.refresh_activity()
+
+    def action_open_selected(self) -> None:
+        list_view = self.query_one("#recent-activity-list", ListView)
+        highlighted = list_view.highlighted_child
+        if isinstance(highlighted, RecentActivityListItem):
+            self.app.push_screen(SeriesDetailScreen(highlighted.slug))
+
+    @on(ListView.Selected, "#recent-activity-list")
+    def handle_open_selected(self, event: ListView.Selected) -> None:
+        if isinstance(event.item, RecentActivityListItem):
+            self.app.push_screen(SeriesDetailScreen(event.item.slug))
+
+    def refresh_activity(self) -> None:
+        entries = self._tracker_app().service.list_recent_activity()
+        status = self.query_one("#series-info-status", Static)
+        list_view = self.query_one("#recent-activity-list", ListView)
+        list_view.clear()
+        if not entries:
+            status.update("No recent activity yet.")
+            return
+        status.update("Most recent playback sessions, newest first.")
+        for entry in entries:
+            list_view.append(RecentActivityListItem(entry))
+        list_view.index = 0
+        list_view.focus()
+
+    def _tracker_app(self) -> MPVTrackerApp:
+        return cast("MPVTrackerApp", self.app)
+
+
 class MPVTrackerApp(App[None]):
     """Top-level Textual application."""
 
@@ -2019,6 +2087,23 @@ def _library_sort_status(*, sort_field: str, descending: bool) -> str:
         f"Sort: {field_label}, {direction_label}. "
         "Press `t` for addition date, `n` for name, `v` to reverse."
     )
+
+
+def _format_recent_activity_row(entry: "RecentActivityEntry") -> str:
+    result = "completed" if entry.completed else _format_seconds(entry.position_seconds)
+    watched_at = _format_activity_timestamp(entry.watched_at)
+    return (
+        f"{_truncate_text(entry.series_title, 26):<26}  "
+        f"{_truncate_text(entry.episode_name, 40):<40}  "
+        f"{result:>9}  "
+        f"{watched_at:>17}"
+    )
+
+
+def _format_activity_timestamp(value: int) -> str:
+    if value <= 0:
+        return "-"
+    return datetime.fromtimestamp(value, UTC).strftime("%d %b %Y %H:%M")
 
 
 def _sortable_header_label(label: str, *, is_active: bool, descending: bool) -> str:

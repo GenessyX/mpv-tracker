@@ -33,6 +33,19 @@ class MediaTrackOption:
 
 
 @dataclass(slots=True, frozen=True)
+class RecentActivityEntry:
+    """Persisted recent playback activity."""
+
+    slug: str
+    series_title: str
+    episode_name: str
+    watched_at: int
+    position_seconds: float
+    duration_seconds: float | None
+    completed: bool
+
+
+@dataclass(slots=True, frozen=True)
 class MALSettings:
     """Persisted MyAnimeList credentials and tokens."""
 

@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from mpv_tracker.activity_store import append_recent_activity, load_recent_activity
 from mpv_tracker.config import (
     APP_SETTINGS_FILE_NAME,
     DB_FILE_NAME,
     MAL_ANIME_CACHE_FILE_NAME,
     MAL_SETTINGS_FILE_NAME,
+    RECENT_ACTIVITY_FILE_NAME,
     RESUME_BACKTRACK_SECONDS,
     default_data_dir,
 )
@@ -34,6 +37,7 @@ from mpv_tracker.models import (
     MALAnimeInfo,
     MALSettings,
     MediaTrackOption,
+    RecentActivityEntry,
     SeriesDetail,
     SeriesProgress,
 )
@@ -76,6 +80,7 @@ class TrackerService:
     mal_settings_path: Path | None = None
     mal_anime_cache_path: Path | None = None
     app_settings_path: Path | None = None
+    recent_activity_path: Path | None = None
 
     @classmethod
     def create_default(cls) -> "TrackerService":
@@ -86,6 +91,7 @@ class TrackerService:
             mal_settings_path=data_dir / MAL_SETTINGS_FILE_NAME,
             mal_anime_cache_path=data_dir / MAL_ANIME_CACHE_FILE_NAME,
             app_settings_path=data_dir / APP_SETTINGS_FILE_NAME,
+            recent_activity_path=data_dir / RECENT_ACTIVITY_FILE_NAME,
         )
 
     def add_series(
@@ -191,6 +197,10 @@ class TrackerService:
         """Persist application settings."""
         save_app_settings_file(self._resolve_app_settings_path(), settings)
         return settings
+
+    def list_recent_activity(self) -> list[RecentActivityEntry]:
+        """Return recent activity entries, newest first."""
+        return load_recent_activity(self._resolve_recent_activity_path())
 
     def list_progress(self) -> list[SeriesProgress]:
         """Summarize tracked series progress."""
@@ -326,6 +336,7 @@ class TrackerService:
             on_update=persist_snapshot,
         )
         persist_snapshot(snapshot)
+        self._record_recent_activity(entry, snapshot)
         self._sync_series_progress_to_mal(entry)
         return entry, episode
 
@@ -424,6 +435,31 @@ class TrackerService:
         if self.mal_anime_cache_path is not None:
             return self.mal_anime_cache_path
         return default_data_dir() / MAL_ANIME_CACHE_FILE_NAME
+
+    def _resolve_recent_activity_path(self) -> Path:
+        if self.recent_activity_path is not None:
+            return self.recent_activity_path
+        return default_data_dir() / RECENT_ACTIVITY_FILE_NAME
+
+    def _record_recent_activity(
+        self,
+        entry: LibraryEntry,
+        snapshot: PlaybackSnapshot,
+    ) -> None:
+        if snapshot.position_seconds <= 0 and not snapshot.watched:
+            return
+        append_recent_activity(
+            self._resolve_recent_activity_path(),
+            RecentActivityEntry(
+                slug=entry.slug,
+                series_title=entry.title,
+                episode_name=snapshot.episode_name,
+                watched_at=int(time.time()),
+                position_seconds=snapshot.position_seconds,
+                duration_seconds=snapshot.duration_seconds,
+                completed=snapshot.watched,
+            ),
+        )
 
     def _sync_series_progress_to_mal(self, entry: LibraryEntry) -> None:
         if entry.mal_anime_id is None:

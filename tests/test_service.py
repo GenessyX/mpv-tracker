@@ -29,7 +29,7 @@ from mpv_tracker.progress import (
 from mpv_tracker.service import TrackerService, _merge_previous_snapshot, slugify
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
     from pathlib import Path
 
     import pytest
@@ -131,6 +131,53 @@ def test_update_series_preferences_persists_start_chapter(tmp_path: Path) -> Non
 
     assert updated.start_chapter_index == 1
     assert service.resolve_entry("frieren").start_chapter_index == 1
+
+
+def test_watch_records_recent_activity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    series_dir = tmp_path / "frieren"
+    series_dir.mkdir()
+    (series_dir / "01.mkv").write_text("")
+
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(
+        repository=repository,
+        recent_activity_path=tmp_path / "recent-activity.json",
+    )
+    service.add_series(title="Frieren", directory=series_dir, slug="frieren")
+
+    class FakeWatcher:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def watch(
+            self,
+            *,
+            on_update: Callable[[PlaybackSnapshot], None] | None = None,
+        ) -> PlaybackSnapshot:
+            snapshot = PlaybackSnapshot(
+                episode_name="01.mkv",
+                position_seconds=123.0,
+                duration_seconds=1500.0,
+                watched=False,
+            )
+            if on_update is not None:
+                on_update(snapshot)
+            return snapshot
+
+    monkeypatch.setattr(service_module, "MPVWatcher", FakeWatcher)
+
+    service.watch("frieren", None)
+
+    activity = service.list_recent_activity()
+
+    assert len(activity) == 1
+    assert activity[0].slug == "frieren"
+    assert activity[0].series_title == "Frieren"
+    assert activity[0].episode_name == "01.mkv"
+    assert activity[0].position_seconds == 123.0
 
 
 def test_sync_series_progress_to_mal_updates_watched_count(
