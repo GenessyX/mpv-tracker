@@ -21,7 +21,7 @@ class LibraryRepository:
         connection.row_factory = sqlite3.Row
         return connection
 
-    def _initialize(self) -> None:
+    def _initialize(self) -> None:  # noqa: C901
         with self._connect() as connection:
             connection.execute(
                 """
@@ -33,6 +33,7 @@ class LibraryRepository:
                     start_chapter_index INTEGER,
                     preferred_audio_track_id INTEGER,
                     preferred_subtitle_track_id INTEGER,
+                    preferred_playback_speed REAL NOT NULL DEFAULT 1.0,
                     animefiller_url TEXT NOT NULL DEFAULT '',
                     filler_episode_numbers TEXT NOT NULL DEFAULT '[]',
                     filler_updated_at INTEGER NOT NULL DEFAULT 0,
@@ -62,6 +63,13 @@ class LibraryRepository:
                     (
                         "ALTER TABLE library "
                         "ADD COLUMN preferred_subtitle_track_id INTEGER"
+                    ),
+                )
+            if "preferred_playback_speed" not in columns:
+                connection.execute(
+                    (
+                        "ALTER TABLE library "
+                        "ADD COLUMN preferred_playback_speed REAL NOT NULL DEFAULT 1.0"
                     ),
                 )
             if "animefiller_url" not in columns:
@@ -122,9 +130,10 @@ class LibraryRepository:
                     "INSERT INTO library "
                     "(slug, title, directory, mal_anime_id, start_chapter_index, "
                     "preferred_audio_track_id, preferred_subtitle_track_id, "
+                    "preferred_playback_speed, "
                     "animefiller_url, filler_episode_numbers, filler_updated_at, "
                     "skip_fillers, added_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
                     "COALESCE(NULLIF(?, 0), CAST(strftime('%s', 'now') AS INTEGER)))"
                 ),
                 (
@@ -135,6 +144,7 @@ class LibraryRepository:
                     entry.start_chapter_index,
                     entry.preferred_audio_track_id,
                     entry.preferred_subtitle_track_id,
+                    entry.preferred_playback_speed,
                     entry.animefiller_url,
                     _serialize_episode_numbers(entry.filler_episode_numbers),
                     entry.filler_updated_at,
@@ -150,7 +160,8 @@ class LibraryRepository:
                     "UPDATE library "
                     "SET slug = ?, title = ?, directory = ?, mal_anime_id = ?, "
                     "start_chapter_index = ?, preferred_audio_track_id = ?, "
-                    "preferred_subtitle_track_id = ?, animefiller_url = ?, "
+                    "preferred_subtitle_track_id = ?, preferred_playback_speed = ?, "
+                    "animefiller_url = ?, "
                     "filler_episode_numbers = ?, filler_updated_at = ?, "
                     "skip_fillers = ?, added_at = ? "
                     "WHERE slug = ?"
@@ -163,6 +174,7 @@ class LibraryRepository:
                     entry.start_chapter_index,
                     entry.preferred_audio_track_id,
                     entry.preferred_subtitle_track_id,
+                    entry.preferred_playback_speed,
                     entry.animefiller_url,
                     _serialize_episode_numbers(entry.filler_episode_numbers),
                     entry.filler_updated_at,
@@ -179,7 +191,8 @@ class LibraryRepository:
                 (
                     "SELECT slug, title, directory, mal_anime_id, "
                     "start_chapter_index, preferred_audio_track_id, "
-                    "preferred_subtitle_track_id, animefiller_url, "
+                    "preferred_subtitle_track_id, preferred_playback_speed, "
+                    "animefiller_url, "
                     "filler_episode_numbers, filler_updated_at, skip_fillers, added_at "
                     "FROM library WHERE slug = ?"
                 ),
@@ -195,6 +208,7 @@ class LibraryRepository:
             start_chapter_index=row["start_chapter_index"],
             preferred_audio_track_id=row["preferred_audio_track_id"],
             preferred_subtitle_track_id=row["preferred_subtitle_track_id"],
+            preferred_playback_speed=row["preferred_playback_speed"],
             animefiller_url=row["animefiller_url"],
             filler_episode_numbers=_deserialize_episode_numbers(
                 row["filler_episode_numbers"],
@@ -218,7 +232,8 @@ class LibraryRepository:
                 (
                     "SELECT slug, title, directory, mal_anime_id, "
                     "start_chapter_index, preferred_audio_track_id, "
-                    "preferred_subtitle_track_id, animefiller_url, "
+                    "preferred_subtitle_track_id, preferred_playback_speed, "
+                    "animefiller_url, "
                     "filler_episode_numbers, filler_updated_at, skip_fillers, added_at "
                     "FROM library "
                     "ORDER BY added_at ASC"
@@ -233,6 +248,7 @@ class LibraryRepository:
                 start_chapter_index=row["start_chapter_index"],
                 preferred_audio_track_id=row["preferred_audio_track_id"],
                 preferred_subtitle_track_id=row["preferred_subtitle_track_id"],
+                preferred_playback_speed=row["preferred_playback_speed"],
                 animefiller_url=row["animefiller_url"],
                 filler_episode_numbers=_deserialize_episode_numbers(
                     row["filler_episode_numbers"],

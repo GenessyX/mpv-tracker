@@ -57,6 +57,7 @@ class MPVWatcher:
         preferred_start_chapter_index: int | None = None,
         preferred_audio_track_id: int | None = None,
         preferred_subtitle_track_id: int | None = None,
+        preferred_playback_speed: float = 1.0,
         filler_episode_names: set[str] | None = None,
     ) -> None:
         self._media_directory = media_directory
@@ -66,10 +67,12 @@ class MPVWatcher:
         self._preferred_start_chapter_index = preferred_start_chapter_index
         self._preferred_audio_track_id = preferred_audio_track_id
         self._preferred_subtitle_track_id = preferred_subtitle_track_id
+        self._preferred_playback_speed = preferred_playback_speed
         self._filler_episode_names = filler_episode_names or set()
         self._initial_seek_applied = start_position_seconds <= 0
         self._chapter_seek_episode_name: str | None = None
         self._track_selection_episode_name: str | None = None
+        self._playback_speed_episode_name: str | None = None
         self._skipped_filler_episode_names: set[str] = set()
 
     def watch(
@@ -276,6 +279,11 @@ class MPVWatcher:
             self._maybe_apply_preferred_tracks(client, observed, message),
             on_update,
         )
+        latest = self._apply_optional_snapshot(
+            latest,
+            self._maybe_apply_preferred_speed(client, observed, message),
+            on_update,
+        )
         return self._apply_optional_snapshot(
             latest,
             self._maybe_skip_filler_episode(client, observed, message),
@@ -310,6 +318,31 @@ class MPVWatcher:
             return None
         self._send_command(client, ["playlist-next", "force"])
         self._skipped_filler_episode_names.add(observed.episode_name)
+        return _snapshot_from_observed_state(observed)
+
+    def _maybe_apply_preferred_speed(
+        self,
+        client: socket.socket,
+        observed: _ObservedPlaybackState,
+        message: dict[str, object],
+    ) -> PlaybackSnapshot | None:
+        if self._preferred_playback_speed == 1.0:
+            return None
+        if self._playback_speed_episode_name == observed.episode_name:
+            return None
+        event_name = message.get("event")
+        property_name = message.get("name")
+        should_apply = event_name == "property-change" and property_name in {
+            "time-pos",
+            "duration",
+        }
+        if not should_apply:
+            return None
+        self._send_command(
+            client,
+            ["set_property", "speed", self._preferred_playback_speed],
+        )
+        self._playback_speed_episode_name = observed.episode_name
         return _snapshot_from_observed_state(observed)
 
     def _maybe_apply_preferred_tracks(

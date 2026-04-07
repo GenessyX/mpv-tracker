@@ -76,6 +76,8 @@ def slugify(value: str) -> str:
 
 
 _MAX_MAL_SCORE = 10
+_MIN_PLAYBACK_SPEED = 0.5
+_MAX_PLAYBACK_SPEED = 2.0
 
 
 @dataclass(slots=True)
@@ -128,6 +130,7 @@ class TrackerService:
             start_chapter_index=_parse_start_chapter(start_chapter),
             preferred_audio_track_id=None,
             preferred_subtitle_track_id=None,
+            preferred_playback_speed=1.0,
             animefiller_url="",
             filler_episode_numbers=(),
             filler_updated_at=0,
@@ -169,6 +172,7 @@ class TrackerService:
             start_chapter_index=existing_entry.start_chapter_index,
             preferred_audio_track_id=existing_entry.preferred_audio_track_id,
             preferred_subtitle_track_id=existing_entry.preferred_subtitle_track_id,
+            preferred_playback_speed=existing_entry.preferred_playback_speed,
             animefiller_url=existing_entry.animefiller_url,
             filler_episode_numbers=existing_entry.filler_episode_numbers,
             filler_updated_at=existing_entry.filler_updated_at,
@@ -331,6 +335,7 @@ class TrackerService:
             preferred_start_chapter_index=entry.start_chapter_index,
             preferred_audio_track_id=entry.preferred_audio_track_id,
             preferred_subtitle_track_id=entry.preferred_subtitle_track_id,
+            preferred_playback_speed=entry.preferred_playback_speed,
             filler_episode_names=filler_episode_names,
         )
         previous_snapshot: tuple[str, float, float | None, bool] | None = None
@@ -387,6 +392,7 @@ class TrackerService:
         start_chapter: int | None,
         preferred_audio_track_id: int | None = None,
         preferred_subtitle_track_id: int | None = None,
+        preferred_playback_speed: float = 1.0,
         animefiller_url: str | None = None,
         skip_fillers: bool = False,
     ) -> LibraryEntry:
@@ -421,6 +427,7 @@ class TrackerService:
             start_chapter_index=_parse_start_chapter(start_chapter),
             preferred_audio_track_id=preferred_audio_track_id,
             preferred_subtitle_track_id=preferred_subtitle_track_id,
+            preferred_playback_speed=_parse_playback_speed(preferred_playback_speed),
             animefiller_url=normalized_filler_url,
             filler_episode_numbers=filler_episode_numbers,
             filler_updated_at=filler_updated_at,
@@ -615,6 +622,13 @@ def _parse_start_chapter(value: int | None) -> int | None:
         msg = "Start chapter must be a positive integer."
         raise ValueError(msg)
     return value - 1
+
+
+def _parse_playback_speed(value: float) -> float:
+    if value < _MIN_PLAYBACK_SPEED or value > _MAX_PLAYBACK_SPEED:
+        msg = "Playback speed must be between 0.50 and 2.00."
+        raise ValueError(msg)
+    return round(value, 2)
 
 
 def _animefiller_cache_stale(updated_at: int) -> bool:

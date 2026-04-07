@@ -134,6 +134,24 @@ def test_update_series_preferences_persists_start_chapter(tmp_path: Path) -> Non
     assert service.resolve_entry("frieren").start_chapter_index == 1
 
 
+def test_update_series_preferences_persists_playback_speed(tmp_path: Path) -> None:
+    series_dir = tmp_path / "frieren"
+    series_dir.mkdir()
+
+    repository = LibraryRepository(tmp_path / "library.sqlite3")
+    service = TrackerService(repository=repository)
+    service.add_series(title="Frieren", directory=series_dir, slug="frieren")
+
+    updated = service.update_series_preferences(
+        "frieren",
+        start_chapter=None,
+        preferred_playback_speed=1.25,
+    )
+
+    assert updated.preferred_playback_speed == 1.25
+    assert service.resolve_entry("frieren").preferred_playback_speed == 1.25
+
+
 def test_update_series_preferences_resolves_filler_episodes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

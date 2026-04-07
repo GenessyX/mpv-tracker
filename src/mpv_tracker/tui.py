@@ -18,8 +18,8 @@ from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import Screen
+from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
     DataTable,
@@ -28,6 +28,7 @@ from textual.widgets import (
     Input,
     ListItem,
     ListView,
+    ProgressBar,
     RadioButton,
     RadioSet,
     Static,
@@ -56,6 +57,7 @@ if TYPE_CHECKING:
     )
 
 BINDING = Binding | tuple[str, str] | tuple[str, str, str]
+SPEED_PRESETS: tuple[float, ...] = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
 
 
 def run_tui(*, debug: bool = False) -> None:
@@ -1192,7 +1194,7 @@ class SeriesDetailScreen(Screen[None]):
     def on_mount(self) -> None:
         self.load_detail()
 
-    def load_detail(self) -> None:
+    def load_detail(self) -> None:  # noqa: PLR0915
         self._detail = self._tracker_app().service.get_series_detail(self.slug)
         detail = self._detail
         self._mal_linked = detail.entry.mal_anime_id is not None
@@ -1217,11 +1219,18 @@ class SeriesDetailScreen(Screen[None]):
         self._selected_mal_score = score_value
         self._sync_mal_rating_buttons()
         preferences_text = "Preferences: default playback"
+        preference_parts: list[str] = []
         if detail.entry.start_chapter_index is not None:
-            preferences_text = (
-                f"Preferences: start fresh episodes from chapter "
-                f"{detail.entry.start_chapter_index + 1}"
+            preference_parts.append(
+                f"start fresh episodes from chapter "
+                f"{detail.entry.start_chapter_index + 1}",
             )
+        if detail.entry.preferred_playback_speed != 1.0:
+            preference_parts.append(
+                f"default speed {detail.entry.preferred_playback_speed:.2f}x",
+            )
+        if preference_parts:
+            preferences_text = "Preferences: " + ", ".join(preference_parts)
         self.query_one("#detail-preferences", Static).update(preferences_text)
         playback_status = (
             "Choose an episode and press Play. Enter on a row also starts playback."
@@ -1572,6 +1581,101 @@ class SeriesInfoScreen(Screen[None]):
         return cast("MPVTrackerApp", self.app)
 
 
+class SpeedSettingsModal(ModalScreen[float | None]):
+    """Modal speed picker similar to a focused playback-speed panel."""
+
+    BINDINGS: ClassVar[list[BINDING]] = [
+        ("escape", "cancel", "Close"),
+    ]
+
+    def __init__(self, initial_speed: float) -> None:
+        super().__init__()
+        self._speed = initial_speed
+
+    def compose(self) -> ComposeResult:
+        with Grid(id="speed-modal"), Vertical(id="speed-modal-panel"):
+            yield Static("Playback Speed", id="speed-modal-title")
+            yield Static("", id="speed-modal-value")
+            with Grid(id="speed-modal-adjust-row"):
+                yield Button(
+                    "-",
+                    id="speed-modal-decrease",
+                    classes="speed-modal-step-button",
+                )
+                yield ProgressBar(
+                    total=150,
+                    show_percentage=False,
+                    show_eta=False,
+                    id="speed-modal-bar",
+                )
+                yield Button(
+                    "+",
+                    id="speed-modal-increase",
+                    classes="speed-modal-step-button",
+                )
+            with Grid(id="speed-modal-presets"):
+                for speed in SPEED_PRESETS:
+                    yield Button(
+                        f"{speed:.2f}".rstrip("0").rstrip("."),
+                        id=f"speed-modal-preset-{str(speed).replace('.', '-')}",
+                        classes="speed-modal-preset-button",
+                    )
+            with Horizontal(id="speed-modal-actions"):
+                yield Button("Apply", id="speed-modal-apply", variant="primary")
+                yield Button("Cancel", id="speed-modal-cancel")
+
+    def on_mount(self) -> None:
+        self._update_controls()
+        self.query_one("#speed-modal-apply", Button).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#speed-modal-decrease")
+    def handle_decrease(self) -> None:
+        self._set_speed(self._speed - 0.01)
+
+    @on(Button.Pressed, "#speed-modal-increase")
+    def handle_increase(self) -> None:
+        self._set_speed(self._speed + 0.01)
+
+    @on(Button.Pressed, "#speed-modal-apply")
+    def handle_apply(self) -> None:
+        self.dismiss(self._speed)
+
+    @on(Button.Pressed, "#speed-modal-cancel")
+    def handle_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, ".speed-modal-preset-button")
+    def handle_preset(self, event: Button.Pressed) -> None:
+        if event.button.id is None or not event.button.id.startswith(
+            "speed-modal-preset-",
+        ):
+            return
+        speed = float(
+            event.button.id.removeprefix("speed-modal-preset-").replace("-", "."),
+        )
+        self._set_speed(speed)
+
+    def _set_speed(self, value: float) -> None:
+        self._speed = max(0.5, min(round(value, 2), 2.0))
+        self._update_controls()
+
+    def _update_controls(self) -> None:
+        self.query_one("#speed-modal-value", Static).update(f"{self._speed:.2f}x")
+        self.query_one("#speed-modal-bar", ProgressBar).update(
+            progress=_speed_progress_value(self._speed),
+            total=150,
+        )
+        for speed in SPEED_PRESETS:
+            button = self.query_one(
+                f"#speed-modal-preset-{str(speed).replace('.', '-')}",
+                Button,
+            )
+            button.variant = "primary" if round(speed, 2) == self._speed else "default"
+
+
 class SeriesPreferencesScreen(Screen[None]):
     """Per-series preference editor."""
 
@@ -1587,6 +1691,7 @@ class SeriesPreferencesScreen(Screen[None]):
         self._subtitle_choice_by_id: dict[str, int | None] = {}
         self._show_filler_details = False
         self._entry: LibraryEntry | None = None
+        self._preferred_playback_speed = 1.0
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -1604,6 +1709,16 @@ class SeriesPreferencesScreen(Screen[None]):
                     placeholder="Start chapter, for example 2",
                     id="series-start-chapter",
                 )
+                yield Static("Playback Speed", id="settings-section-title")
+                yield Static(
+                    (
+                        "Choose a default playback speed for this series. "
+                        "Open the speed picker to change the default playback speed."
+                    ),
+                    id="settings-section-help",
+                )
+                yield Static("", id="series-speed-display")
+                yield Button("Adjust Speed", id="open-speed-modal")
                 yield Static("Default Audio", id="audio-settings-section-title")
                 yield Static(
                     "Choose the audio track to apply when playback starts.",
@@ -1645,6 +1760,7 @@ class SeriesPreferencesScreen(Screen[None]):
     def on_mount(self) -> None:
         entry = self._tracker_app().service.resolve_entry(self.slug)
         self._entry = entry
+        self._preferred_playback_speed = entry.preferred_playback_speed
         if entry.start_chapter_index is not None:
             self.query_one("#series-start-chapter", Input).value = str(
                 entry.start_chapter_index + 1,
@@ -1653,6 +1769,7 @@ class SeriesPreferencesScreen(Screen[None]):
         self._mount_track_sets(entry)
         self._mount_filler_toggle(entry)
         self._update_filler_status(entry)
+        self._update_speed_controls()
         self.query_one("#series-preferences-scroll", VerticalScroll).refresh(
             layout=True,
         )
@@ -1678,6 +1795,13 @@ class SeriesPreferencesScreen(Screen[None]):
         self._update_filler_details()
         self.query_one("#series-preferences-scroll", VerticalScroll).refresh(
             layout=True,
+        )
+
+    @on(Button.Pressed, "#open-speed-modal")
+    def handle_open_speed_modal(self) -> None:
+        self.app.push_screen(
+            SpeedSettingsModal(self._preferred_playback_speed),
+            callback=self._apply_selected_speed,
         )
 
     @on(Input.Submitted, "#series-start-chapter")
@@ -1708,6 +1832,7 @@ class SeriesPreferencesScreen(Screen[None]):
                 start_chapter=start_chapter,
                 preferred_audio_track_id=audio_choice,
                 preferred_subtitle_track_id=subtitle_choice,
+                preferred_playback_speed=self._preferred_playback_speed,
                 animefiller_url=self.query_one(
                     "#series-animefiller-url",
                     Input,
@@ -1724,6 +1849,7 @@ class SeriesPreferencesScreen(Screen[None]):
             entry.start_chapter_index is not None
             or entry.preferred_audio_track_id is not None
             or entry.preferred_subtitle_track_id is not None
+            or entry.preferred_playback_speed != 1.0
             or entry.animefiller_url
             or entry.skip_fillers
         ):
@@ -1856,6 +1982,20 @@ class SeriesPreferencesScreen(Screen[None]):
         canon_text = _format_episode_number_ranges(canon_numbers)
         details.update(f"Filler: {filler_text}\nCanon: {canon_text}")
 
+    def _set_playback_speed(self, value: float) -> None:
+        self._preferred_playback_speed = max(0.5, min(round(value, 2), 2.0))
+        self._update_speed_controls()
+
+    def _apply_selected_speed(self, value: float | None) -> None:
+        if value is None:
+            return
+        self._set_playback_speed(value)
+
+    def _update_speed_controls(self) -> None:
+        self.query_one("#series-speed-display", Static).update(
+            f"Default speed: {self._preferred_playback_speed:.2f}x",
+        )
+
     def _tracker_app(self) -> MPVTrackerApp:
         return cast("MPVTrackerApp", self.app)
 
@@ -1964,6 +2104,62 @@ class MPVTrackerApp(App[None]):
     #series-filler-details {
         height: auto;
         margin-bottom: 1;
+    }
+
+    #speed-modal {
+        width: 100%;
+        height: 100%;
+        align: center middle;
+        background: rgba(0, 0, 0, 0.6);
+    }
+
+    #speed-modal-panel {
+        width: 64;
+        height: auto;
+        border: round #355070;
+        background: #16212b;
+        padding: 1 2;
+    }
+
+    #speed-modal-title {
+        text-style: bold;
+        color: #f6bd60;
+        margin-bottom: 1;
+    }
+
+    #speed-modal-value {
+        color: #edf2f7;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #speed-modal-adjust-row {
+        grid-size: 3;
+        grid-columns: 7 1fr 7;
+        grid-gutter: 0;
+        width: 100%;
+        height: 3;
+        margin-bottom: 1;
+    }
+
+    #speed-modal-bar {
+        width: 100%;
+        height: 3;
+        color: #4ea8de;
+        margin: 0;
+    }
+
+    #speed-modal-presets {
+        grid-size: 6;
+        grid-columns: 1fr 1fr 1fr 1fr 1fr 1fr;
+        grid-gutter: 1;
+        width: 100%;
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #speed-modal-actions {
+        height: auto;
     }
 
     #mal-account-layout {
@@ -2158,11 +2354,29 @@ class MPVTrackerApp(App[None]):
     }
 
     .compact-secondary-button {
-        width: 12;
-        min-width: 12;
+        width: auto;
+        min-width: 5;
+        height: 3;
+        margin-right: 1;
+        padding: 0;
+        content-align: center middle;
+    }
+
+    .speed-modal-step-button {
+        min-width: 7;
+        width: 7;
         height: 3;
         margin-right: 0;
-        padding: 0 1;
+        padding: 0;
+        content-align: center middle;
+    }
+
+    .speed-modal-preset-button {
+        width: 100%;
+        min-width: 0;
+        height: 3;
+        margin-right: 0;
+        padding: 0;
         content-align: center middle;
     }
 
@@ -2390,6 +2604,10 @@ def _format_activity_timestamp(value: int) -> str:
     if value <= 0:
         return "-"
     return datetime.fromtimestamp(value, UTC).strftime("%d %b %Y %H:%M")
+
+
+def _speed_progress_value(speed: float) -> int:
+    return round((speed - 0.5) * 100)
 
 
 def _format_episode_number_ranges(numbers: list[int]) -> str:
