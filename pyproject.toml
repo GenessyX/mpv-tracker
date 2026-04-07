@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "mpv-tracker"
-version = "1.4.0"
+version = "1.5.0"
 description = "TUI app for tracking episodes in local series directories"
 readme = "README.md"
 requires-python = ">= 3.12"
